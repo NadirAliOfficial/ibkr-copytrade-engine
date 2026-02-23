@@ -8,20 +8,16 @@ jobs:
   build:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v3
-
-      - uses: actions/setup-python@v4
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-
       - name: Install dependencies
         run: pip install pyinstaller ib_insync requests pillow
-
       - name: Build EXE
         run: pyinstaller build_neroai.spec
-
       - name: Upload EXE artifact
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: NeroAI_CopyTrade
           path: dist/NeroAI_CopyTrade.exe
