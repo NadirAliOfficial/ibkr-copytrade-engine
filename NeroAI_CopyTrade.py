@@ -4,10 +4,9 @@ import threading, requests, time, io, base64
 from datetime import datetime
 from PIL import Image, ImageTk
 from ib_insync import IB, Stock, MarketOrder, LimitOrder
-import os
-from dotenv import load_dotenv
 
-VPS_URL = os.getenv("VPS_URL")
+
+VPS_URL = "http://187.77.200.114:5000/orders"
 
 BG     = "#0d1526"
 PANEL  = "#111d35"
