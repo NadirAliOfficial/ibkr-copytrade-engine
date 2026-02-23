@@ -2,4 +2,4 @@ ib_insync
 requests
 pillow 
 flask
-dotenv
+python-dotenv
