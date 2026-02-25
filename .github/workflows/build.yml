@@ -13,7 +13,7 @@ jobs:
         with:
           python-version: '3.11'
       - name: Install dependencies
-        run: pip install pyinstaller ib_insync requests pillow python-dotenv
+        run: pip install pyinstaller ib_insync requests pillow python-dotenv tzdata
       - name: Build EXE
         run: pyinstaller build_neroai.spec
       - name: Upload EXE artifact
