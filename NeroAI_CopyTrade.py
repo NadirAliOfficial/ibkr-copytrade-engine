@@ -33,11 +33,10 @@ class NeroAIClient:
         self.root.resizable(False, False)
         self.ib        = IB()
         self.running   = False
-        self.placed    = set()
+        self._last_idx = 0               # tracks last order index from VPS
         self._stop     = threading.Event()
         self._counts   = {"received": 0, "placed": 0, "failed": 0}
-        self._mode     = tk.StringVar(value="new")   # "new" or "all"
-        self._startup_orders_loaded = False
+        self._mode     = tk.StringVar(value="new")
         self._build_ui()
         self._set_icon()
 
@@ -257,8 +256,10 @@ class NeroAIClient:
         self._btn.config(text="▶   START", bg=TEAL, activebackground="#00e8c0", fg="#0a1220")
         self.root.after(0, lambda: self._set_status(False))
         self._log_warn("Engine stopped.")
-        try: self.ib.disconnect()
+        try:
+            self.ib.disconnect()
         except: pass
+        self.ib = IB()   # fresh instance so reconnect always works
 
     # ── main loop ─────────────────────────────────────────────────────────────
     def _run(self, host, port, cid):
@@ -310,9 +311,15 @@ class NeroAIClient:
         self.root.after(0, lambda: self._inc("received"))
         try:
             contract = Stock(o["symbol"], o["exchange"], o["currency"])
-            order = MarketOrder(o["action"], o["quantity"]) if o["orderType"] == "MKT" \
-                    else LimitOrder(o["action"], o["quantity"], o["price"])
-            self.ib.placeOrder(contract, order)
+            self.ib.qualifyContracts(contract)   # ensure contract is valid
+            if o["orderType"] == "MKT":
+                order = MarketOrder(o["action"], o["quantity"])
+                order.tif = "DAY"
+            else:
+                order = LimitOrder(o["action"], o["quantity"], o["price"])
+                order.tif = "DAY"
+            trade = self.ib.placeOrder(contract, order)
+            self.ib.sleep(0.5)                   # give TWS time to accept each order
             self.root.after(0, lambda: self._inc("placed"))
             self.root.after(0, lambda oo=o: self._log_order(oo))
         except Exception as e:
