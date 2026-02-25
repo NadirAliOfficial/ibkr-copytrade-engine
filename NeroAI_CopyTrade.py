@@ -276,21 +276,22 @@ class NeroAIClient:
             self.root.after(0, lambda: self._btn.config(text="▶   START", bg=TEAL, fg="#0a1220"))
             return
 
-        # If mode=new, mark all existing orders as already seen (don't place them)
+        # If mode=new, skip all existing orders by fast-forwarding the index
         if self._mode.get() == "new":
             try:
                 existing = requests.get(VPS_URL, timeout=4).json()
-                for o in existing:
-                    key = o.get("id", f"{o['symbol']}-{o['action']}-{o['quantity']}-{o['price']}")
-                    self.placed.add(key)
-                self._log_info(f"Mode: New Trades Only — skipped {len(existing)} existing orders")
+                # get total count without ?since param
+                all_orders = requests.get(VPS_URL.replace("/orders", "/orders"), timeout=4).json()
+                self._last_idx = len(all_orders)
+                self._log_info(f"Mode: New Trades Only — skipped {self._last_idx} existing orders")
             except: pass
 
         while not self._stop.is_set():
             try:
-                orders = requests.get(VPS_URL, timeout=4).json()
-                for o in orders:
+                new_orders = requests.get(f"{VPS_URL}?since={self._last_idx}", timeout=4).json()
+                for o in new_orders:
                     self._maybe_place(o)
+                    self._last_idx += 1
             except Exception as e:
                 self.root.after(0, lambda e=e: self._log_err(f"VPS poll error: {e}"))
             time.sleep(2)
@@ -306,9 +307,6 @@ class NeroAIClient:
         except: pass
 
     def _maybe_place(self, o):
-        key = o.get("id", f"{o['symbol']}-{o['action']}-{o['quantity']}-{o['price']}")
-        if key in self.placed: return
-        self.placed.add(key)
         self.root.after(0, lambda: self._inc("received"))
         try:
             contract = Stock(o["symbol"], o["exchange"], o["currency"])

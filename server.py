@@ -7,14 +7,16 @@ orders = []
 @app.route('/order', methods=['POST'])
 def receive():
     data = request.json
-    data['id'] = str(uuid.uuid4())   # unique ID for every order
+    data['id'] = str(uuid.uuid4())
     orders.append(data)
-    print("Received:", data)
+    print(f"Received [{len(orders)-1}]: {data['symbol']} {data['action']} {data['quantity']}")
     return jsonify({"status": "ok", "id": data['id']})
 
 @app.route('/orders', methods=['GET'])
 def get_orders():
-    return jsonify(orders)
+    # Client passes ?since=N to get only orders from index N onwards
+    since = request.args.get('since', 0, type=int)
+    return jsonify(orders[since:])
 
 @app.route('/clear', methods=['POST'])
 def clear():
