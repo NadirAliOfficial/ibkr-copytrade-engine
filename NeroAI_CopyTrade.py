@@ -36,7 +36,8 @@ class NeroAIClient:
         self._last_idx = 0               # tracks last order index from VPS
         self._stop     = threading.Event()
         self._counts   = {"received": 0, "placed": 0, "failed": 0}
-        self._mode     = tk.StringVar(value="new")
+        self._mode       = tk.StringVar(value="new")
+        self._trade_mode = tk.StringVar(value="long_short")  # "long_only" or "long_short"
         self._build_ui()
         self._set_icon()
 
@@ -133,6 +134,32 @@ class NeroAIClient:
         self._mode_lbl.pack(side="left", padx=(10, 0))
         self._on_mode_change()
 
+        # ── trading mode panel ────────────────────────────────────────────────
+        tm = tk.Frame(self.root, bg=PANEL, highlightthickness=1, highlightbackground=BORDER)
+        tm.pack(fill="x", padx=24, pady=(0, 10))
+        tm_inner = tk.Frame(tm, bg=PANEL, padx=20, pady=12)
+        tm_inner.pack(fill="x")
+        tk.Label(tm_inner, text="TRADING MODE", font=("Segoe UI", 7, "bold"),
+                 fg=TEAL, bg=PANEL).pack(side="left", padx=(0, 20))
+
+        for value, label in [("long_short", "Long & Short"), ("long_only", "Long Only")]:
+            rb = tk.Radiobutton(
+                tm_inner, text=label, variable=self._trade_mode, value=value,
+                font=("Segoe UI", 9), fg=TEXT, bg=PANEL,
+                selectcolor=DIM2, activebackground=PANEL, activeforeground=TEAL,
+                indicatoron=0, relief="flat", cursor="hand2",
+                highlightthickness=1, highlightbackground=BORDER,
+                highlightcolor=TEAL, padx=14, pady=6,
+            )
+            rb.pack(side="left", padx=(0, 8))
+
+        self._trade_mode_lbl = tk.Label(tm_inner, text="BUY and SELL orders will be mirrored",
+                                         font=("Segoe UI", 8), fg=SUB, bg=PANEL)
+        self._trade_mode_lbl.pack(side="left", padx=(10, 0))
+
+        self._trade_mode.trace_add("write", lambda *a: self._on_trade_mode_change())
+        self._on_trade_mode_change()
+
         # ── stat cards ────────────────────────────────────────────────────────
         cards = tk.Frame(self.root, bg=BG)
         cards.pack(fill="x", padx=24, pady=(0, 10))
@@ -185,7 +212,13 @@ class NeroAIClient:
         else:
             self._mode_lbl.config(text="All current open orders + new orders will be mirrored")
 
-    # ── clock ─────────────────────────────────────────────────────────────────
+    def _on_trade_mode_change(self):
+        if self._trade_mode.get() == "long_only":
+            self._trade_mode_lbl.config(text="SELL orders from master will be skipped")
+        else:
+            self._trade_mode_lbl.config(text="BUY and SELL orders will be mirrored")
+
+    # ── clock ─────────────────────────────────────────────────────────────────────
     def _tick_clock(self):
         self._time_lbl.config(text=datetime.now().strftime("%Y-%m-%d  %H:%M:%S"))
         self.root.after(1000, self._tick_clock)
@@ -308,6 +341,10 @@ class NeroAIClient:
         except: pass
 
     def _maybe_place(self, o):
+        # Skip SELL orders in Long Only mode
+        if self._trade_mode.get() == "long_only" and o["action"] == "SELL":
+            self.root.after(0, lambda: self._log_warn(f"Skipped SELL {o['symbol']} (Long Only mode)"))
+            return
         self.root.after(0, lambda: self._inc("received"))
         try:
             contract = Stock(o["symbol"], o["exchange"], o["currency"])
