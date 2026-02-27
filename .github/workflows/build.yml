@@ -24,7 +24,7 @@ jobs:
         shell: python
         run: |
           import re, base64
-          with open("NeroAI_CopyTrade.py") as f:
+          with open("NeroAI_CopyTrade.py", encoding="utf-8") as f:
               code = f.read()
           b64 = re.search(r'ICON_B64 = "([^"]+)"', code).group(1)
           with open("neroai.ico", "wb") as f:
