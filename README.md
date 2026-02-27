@@ -11,18 +11,23 @@
 ## How It Works
 
 ```
-Master Account (Your Machine)
+Master Machine (Windows RDP / VPS with TWS)
         │
-        │  HTTP POST (real-time)
-        ▼
-    VPS Ubuntu (Relay Server)
+        ├── master.py
+        │     ├── Connects to TWS (clientId=0 — sees ALL manual orders)
+        │     ├── Captures orders in real-time
+        │     ├── Serves orders + master balance via Flask API (:5000)
+        │     └── Auto-updates master balance every 30 seconds
         │
-        │  HTTP GET (poll every 2s)
+        │  HTTP GET (poll every 2 seconds)
         ▼
-Client .exe (Any Windows Machine)
+Client Machine (Any Windows Machine)
         │
-        ▼
-  Client IBKR Account
+        └── NeroAI_CopyTrade.exe
+              ├── Connects to client's own TWS
+              ├── Polls master API for new orders
+              ├── Applies proportional sizing + multiplier
+              └── Places orders in client IBKR account
 ```
 
 ---
@@ -31,110 +36,136 @@ Client .exe (Any Windows Machine)
 
 ```
 ibkr-copytrade-engine/
-├── fetch_orders.py       # Runs on master machine — sends orders to VPS
-├── server.py             # Runs on Ubuntu VPS — receives & stores orders
-├── neroai_client.py      # Client GUI app — polls VPS & places orders
+├── master.py             # Runs on master Windows machine — TWS + Flask in one
+├── NeroAI_CopyTrade.py   # Client GUI app — polls master & places orders
 ├── build_neroai.spec     # PyInstaller spec to build Windows .exe
+├── neroai.ico            # NeroAI icon (embedded in .exe)
 ├── requirements.txt      # Python dependencies
-└── README.md
+├── README.md
+└── .github/
+    └── workflows/
+        └── build.yml     # Auto-builds Windows .exe on push to main
 ```
 
 ---
 
 ## Setup
 
-### 1. Master Machine (Your IBKR Account)
+### 1. Master Machine (Windows RDP / VPS)
+
+The master machine runs TWS 24/7 and serves orders to all clients.
 
 **Requirements:**
 - TWS (Trader Workstation) running and logged in
 - API enabled in TWS: `Edit → Global Config → API → Enable ActiveX and Socket Clients`
+- Port 5000 open in Windows Firewall
+
+**Open firewall (run as Administrator in CMD):**
+```bash
+netsh advfirewall firewall add rule name="NeroAI" dir=in action=allow protocol=TCP localport=5000
+```
 
 **Install:**
 ```bash
-pip install ib_insync requests
+pip install ib_insync flask
 ```
 
 **Run:**
 ```bash
-python fetch_orders.py
+python master.py
 ```
 
-This will connect to TWS, fetch all open orders on startup, then listen for new orders in real-time and forward them to your VPS.
+`master.py` will:
+- Connect to TWS on `127.0.0.1:7496`
+- Capture all open and new orders in real-time
+- Start Flask API on port `5000`
+- Serve orders + master balance to all clients
 
----
-
-### 2. VPS Ubuntu (Relay Server)
-
-**Install:**
-```bash
-pip install flask
-```
-
-**Run:**
-```bash
-python server.py
-```
-
-Server runs on port `5000`. Make sure port 5000 is open in your VPS firewall.
-
-**Endpoints:**
+**API Endpoints:**
 | Method | URL | Description |
 |--------|-----|-------------|
-| POST | `/order` | Receives order from master machine |
-| GET | `/orders` | Returns all orders (polled by clients) |
+| GET | `/orders?since=N` | Returns new orders from index N |
+| GET | `/balance` | Returns master account balance |
+| GET | `/status` | Server status + total orders |
+| POST | `/clear` | Clear order list |
 
 ---
 
-### 3. Client Machine (Windows .exe)
+### 2. Client Machine (Windows)
 
-Clients need:
-- **TWS** installed, running, and logged in to their IBKR account
+Each client runs `NeroAI_CopyTrade.exe` on their own machine with their own TWS.
+
+**Requirements:**
+- TWS installed, running, and logged in to their IBKR account
 - API enabled in TWS settings
-- The `NeroAI_CopyTrade.exe` file
 
-On startup, the client enters their TWS connection details and presses **START**. The app will automatically mirror all orders from the master account into their account.
+**Configuration (inside `NeroAI_CopyTrade.py` before building .exe):**
+```python
+MASTER_URL = "http://YOUR_MASTER_IP:5000"
+```
+Replace `YOUR_MASTER_IP` with the public IP of the master Windows machine.
+Find it at: https://whatismyip.com (run on master machine)
+
+---
+
+## Client Features
+
+### TWS Connection
+- **Live** → auto-connects to port `7496`
+- **Paper** → auto-connects to port `7497`
+- No manual port or host entry needed
+
+### Copy Mode
+| Mode | Description |
+|------|-------------|
+| New Trades Only | Only mirrors orders placed after pressing START |
+| Existing + New Trades | Mirrors all current open orders + new orders |
+
+### Trading Mode
+| Mode | Description |
+|------|-------------|
+| Long & Short | Mirrors both BUY and SELL orders |
+| Long Only | Only mirrors BUY orders — SELL orders are skipped |
+
+### Risk Management
+| Setting | Range | Description |
+|---------|-------|-------------|
+| Size Multiplier | 0.1x to 5.0x | Scales order quantity proportionally |
+| Max Drawdown | 1% to 50% | Stops copying if client balance drops by this % |
+
+**Proportional Sizing Formula:**
+```
+client_qty = master_qty x (client_balance / master_balance) x multiplier
+
+Example:
+  Master balance  = $25,000
+  Client balance  = $100,000
+  Master places   = BUY 100 TSLA
+  Multiplier      = 1.0
+
+  Ratio           = 100,000 / 25,000 = 4.0
+  Client qty      = 100 x 4.0 x 1.0 = 400 shares
+```
 
 ---
 
 ## Building the Windows .exe
 
-> Must be built on a Windows machine or via GitHub Actions (see below).
+### Via GitHub Actions (recommended)
 
-**On Windows:**
+Push to `main` — GitHub Actions automatically builds the `.exe`.
+Go to **Actions** tab → download `NeroAI_CopyTrade_EXE` artifact.
+
+The NeroAI icon is automatically extracted and embedded into the `.exe` during build.
+
+### Manually on Windows
+
 ```bash
-pip install pyinstaller ib_insync requests pillow
+pip install pyinstaller ib_insync requests pillow tzdata
 pyinstaller build_neroai.spec
 ```
 
 The `.exe` will be in the `dist/` folder.
-
-**Via GitHub Actions (build from Mac/Linux):**
-
-Create `.github/workflows/build.yml`:
-```yaml
-name: Build Windows EXE
-
-on:
-  push:
-    branches: [main]
-
-jobs:
-  build:
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v3
-      - uses: actions/setup-python@v4
-        with:
-          python-version: '3.11'
-      - run: pip install pyinstaller ib_insync requests pillow
-      - run: pyinstaller build_neroai.spec
-      - uses: actions/upload-artifact@v3
-        with:
-          name: NeroAI_CopyTrade
-          path: dist/NeroAI_CopyTrade.exe
-```
-
-Push to `main` → go to **Actions** tab → download the `.exe` artifact.
 
 ---
 
@@ -145,21 +176,8 @@ ib_insync
 requests
 flask
 pillow
+tzdata
 ```
-
----
-
-## Configuration
-
-| Variable | File | Default | Description |
-|----------|------|---------|-------------|
-| `VPS_URL` | `fetch_orders.py` | `http://YOUR_VPS_IP:5000/order` | Your VPS address |
-| `VPS_URL` | `neroai_client.py` | `http://YOUR_VPS_IP:5000/orders` | Your VPS address |
-| TWS Host | GUI / `fetch_orders.py` | `127.0.0.1` | TWS host |
-| TWS Port | GUI / `fetch_orders.py` | `7496` | TWS port (7496=live, 7497=paper) |
-| Client ID | GUI / `fetch_orders.py` | `0` / `20` | Must be unique per connection |
-
-> ⚠️ Master machine uses `clientId=0` to see all manually placed orders. Each client must use a **different** clientId.
 
 ---
 
@@ -167,20 +185,46 @@ pillow
 
 | Type | Supported |
 |------|-----------|
-| Market (MKT) | ✅ |
-| Limit (LMT) | ✅ |
-| Stocks | ✅ |
+| Market (MKT) | Yes |
+| Limit (LMT) | Yes |
+| Stocks | Yes |
+| BUY | Yes |
+| SELL | Yes (skipped in Long Only mode) |
+
+---
+
+## Deployment Checklist
+
+**Master Machine:**
+- [ ] TWS running and logged in
+- [ ] API enabled in TWS settings
+- [ ] Port 5000 open in Windows Firewall
+- [ ] `master.py` running
+- [ ] Test: `curl http://YOUR_IP:5000/status`
+
+**Client Machine:**
+- [ ] TWS running and logged in
+- [ ] API enabled in TWS settings
+- [ ] `MASTER_URL` set to master machine IP
+- [ ] `.exe` built and distributed to client
+- [ ] Select Live or Paper mode
+- [ ] Set multiplier and max drawdown
+- [ ] Press START
 
 ---
 
 ## Notes
 
-- The VPS stores orders **in memory** — they reset if the server restarts. For persistence, replace the `orders = []` list with a database (SQLite, Redis, etc.)
-- Paper trading port is `7497`, live trading is `7496`
-- The client deduplicates orders using `symbol + action + quantity + price` as a key — restarting the client won't re-place orders already placed in that session
+- `master.py` uses `clientId=0` to capture ALL manually placed orders in TWS
+- Orders are stored in memory — reset if `master.py` restarts
+- Each client connects to their own TWS with their own account
+- Max drawdown is measured from the balance at the time START is pressed
+- When max drawdown is hit, copying stops — client presses START again to resume
 
 ---
 
-## License
+## Credits
 
-MIT © [NeroAI](https://github.com/NadirAliOfficial)
+Built by **Nadir Ali Khan** — [theteamnak.com](https://theteamnak.com)
+
+© NeroAI | [github.com/NadirAliOfficial](https://github.com/NadirAliOfficial)
