@@ -31,9 +31,9 @@ class NeroAIClient:
     def __init__(self, root):
         self.root    = root
         self.root.title("NeroAI — IBKR CopyTrade")
-        self.root.geometry("1000x880")
+        self.root.geometry("1000x750")
         self.root.configure(bg=BG)
-        self.root.resizable(False, False)
+        self.root.resizable(True, True)
 
         self.ib              = IB()
         self.running         = False
@@ -79,8 +79,8 @@ class NeroAIClient:
         self._logo_img = ImageTk.PhotoImage(pil_img)
         tk.Label(inner, image=self._logo_img, bg=PANEL2, bd=0).pack(side="left")
         tk.Label(inner, text="  CopyTrade Engine",
-                 font=("Segoe UI", 11), fg=SUB, bg=PANEL2).pack(side="left")
-        self._time_lbl = tk.Label(inner, text="", font=("Courier New", 11), fg=SUB, bg=PANEL2)
+                 font=("Segoe UI", 10), fg=SUB, bg=PANEL2).pack(side="left")
+        self._time_lbl = tk.Label(inner, text="", font=("Courier New", 10), fg=SUB, bg=PANEL2)
         self._time_lbl.pack(side="right")
         self._tick_clock()
         tk.Frame(self.root, bg=BORDER, height=1).pack(fill="x")
@@ -88,32 +88,32 @@ class NeroAIClient:
         # status bar
         sbar = tk.Frame(self.root, bg=BG, padx=24, pady=10)
         sbar.pack(fill="x")
-        self._dot = tk.Label(sbar, text="●", font=("Segoe UI", 16), fg=RED, bg=BG)
+        self._dot = tk.Label(sbar, text="●", font=("Segoe UI", 13), fg=RED, bg=BG)
         self._dot.pack(side="left")
         self._status_lbl = tk.Label(sbar, text="  Disconnected",
-                                     font=("Segoe UI", 12, "bold"), fg=RED, bg=BG)
+                                     font=("Segoe UI", 10, "bold"), fg=RED, bg=BG)
         self._status_lbl.pack(side="left")
         self._bal_lbl = tk.Label(sbar, text="Net Liquidation:  —",
-                                  font=("Segoe UI", 12), fg=SUB, bg=BG)
+                                  font=("Segoe UI", 10), fg=SUB, bg=BG)
         self._bal_lbl.pack(side="right")
 
         # ── connection panel ─────────────────────────────────────────────────
         cp = tk.Frame(self.root, bg=PANEL, highlightthickness=1, highlightbackground=BORDER)
         cp.pack(fill="x", padx=24, pady=(4, 8))
-        ci = tk.Frame(cp, bg=PANEL, padx=20, pady=14)
+        ci = tk.Frame(cp, bg=PANEL, padx=20, pady=10)
         ci.pack(fill="x")
-        tk.Label(ci, text="TWS CONNECTION", font=("Segoe UI", 9, "bold"),
+        tk.Label(ci, text="TWS CONNECTION", font=("Segoe UI", 8, "bold"),
                  fg=TEAL, bg=PANEL).grid(row=0, column=0, columnspan=8, sticky="w", pady=(0,8))
 
         # Paper / Live toggle
-        tk.Label(ci, text="Mode", font=("Segoe UI", 12), fg=SUB, bg=PANEL).grid(
+        tk.Label(ci, text="Mode", font=("Segoe UI", 10), fg=SUB, bg=PANEL).grid(
             row=1, column=0, sticky="w", padx=(0,4))
         acct_frame = tk.Frame(ci, bg=PANEL)
         acct_frame.grid(row=2, column=0, padx=(0,20))
         for val, lbl in [("live","Live"), ("paper","Paper")]:
             rb = tk.Radiobutton(
                 acct_frame, text=lbl, variable=self._account_mode, value=val,
-                font=("Segoe UI", 11), fg=TEXT, bg=PANEL,
+                font=("Segoe UI", 10), fg=TEXT, bg=PANEL,
                 selectcolor=DIM2, activebackground=PANEL, activeforeground=TEAL,
                 indicatoron=0, relief="flat", cursor="hand2",
                 highlightthickness=1, highlightbackground=BORDER,
@@ -149,16 +149,16 @@ class NeroAIClient:
         # ── risk management ───────────────────────────────────────────────────
         rm = tk.Frame(self.root, bg=PANEL, highlightthickness=1, highlightbackground=BORDER)
         rm.pack(fill="x", padx=24, pady=(0, 8))
-        rm_inner = tk.Frame(rm, bg=PANEL, padx=20, pady=14)
+        rm_inner = tk.Frame(rm, bg=PANEL, padx=20, pady=10)
         rm_inner.pack(fill="x")
-        tk.Label(rm_inner, text="RISK MANAGEMENT", font=("Segoe UI", 9, "bold"),
+        tk.Label(rm_inner, text="RISK MANAGEMENT", font=("Segoe UI", 8, "bold"),
                  fg=TEAL, bg=PANEL).grid(row=0, column=0, columnspan=6, sticky="w", pady=(0,10))
 
         # Multiplier slider
-        tk.Label(rm_inner, text="Size Multiplier", font=("Segoe UI", 12), fg=SUB, bg=PANEL).grid(
+        tk.Label(rm_inner, text="Size Multiplier", font=("Segoe UI", 10), fg=SUB, bg=PANEL).grid(
             row=1, column=0, sticky="w", padx=(0,10))
         self._mult_val_lbl = tk.Label(rm_inner, text="1.0×",
-                                       font=("Segoe UI", 12, "bold"), fg=TEAL, bg=PANEL, width=5)
+                                       font=("Segoe UI", 10, "bold"), fg=TEAL, bg=PANEL, width=5)
         self._mult_val_lbl.grid(row=1, column=1, padx=(0,10))
         mult_slider = tk.Scale(rm_inner, from_=0.1, to=5.0, resolution=0.1,
                                 orient="horizontal", variable=self._multiplier,
@@ -172,10 +172,10 @@ class NeroAIClient:
         tk.Label(rm_inner, text="5.0×", font=("Segoe UI", 7), fg=SUB, bg=PANEL).grid(row=2, column=2, sticky="e", padx=(0,40))
 
         # Max drawdown slider
-        tk.Label(rm_inner, text="Max Drawdown", font=("Segoe UI", 12), fg=SUB, bg=PANEL).grid(
+        tk.Label(rm_inner, text="Max Drawdown", font=("Segoe UI", 10), fg=SUB, bg=PANEL).grid(
             row=1, column=3, sticky="w", padx=(0,10))
         self._dd_val_lbl = tk.Label(rm_inner, text="10.0%",
-                                     font=("Segoe UI", 12, "bold"), fg=RED, bg=PANEL, width=6)
+                                     font=("Segoe UI", 10, "bold"), fg=RED, bg=PANEL, width=6)
         self._dd_val_lbl.grid(row=1, column=4, padx=(0,10))
         dd_slider = tk.Scale(rm_inner, from_=1.0, to=50.0, resolution=0.5,
                               orient="horizontal", variable=self._max_drawdown,
@@ -191,7 +191,7 @@ class NeroAIClient:
         # Risk info label
         self._risk_lbl = tk.Label(rm_inner,
             text="Proportional sizing active. Trades will stop if drawdown exceeds 10.0%",
-            font=("Segoe UI", 12), fg=SUB, bg=PANEL)
+            font=("Segoe UI", 10), fg=SUB, bg=PANEL)
         self._risk_lbl.grid(row=3, column=0, columnspan=6, sticky="w", pady=(8,0))
 
         # ── stat cards ────────────────────────────────────────────────────────
@@ -204,8 +204,8 @@ class NeroAIClient:
                 ("FAILED","failed",RED)]):
             f = tk.Frame(cards, bg=PANEL, highlightthickness=1, highlightbackground=BORDER)
             f.pack(side="left", fill="x", expand=True, padx=(0 if i==0 else 8, 0))
-            tk.Label(f, text=title, font=("Segoe UI", 9, "bold"), fg=SUB, bg=PANEL).pack(pady=(10,0))
-            v = tk.Label(f, text="0", font=("Courier New", 26, "bold"), fg=color, bg=PANEL)
+            tk.Label(f, text=title, font=("Segoe UI", 8, "bold"), fg=SUB, bg=PANEL).pack(pady=(10,0))
+            v = tk.Label(f, text="0", font=("Courier New", 22, "bold"), fg=color, bg=PANEL)
             v.pack(pady=(2,10))
             self._stat_labels[key] = v
 
@@ -215,13 +215,13 @@ class NeroAIClient:
         lf_hdr = tk.Frame(lf, bg=BORDER, padx=16, pady=6)
         lf_hdr.pack(fill="x")
         tk.Label(lf_hdr, text="LIVE ORDER FEED",
-                 font=("Segoe UI", 12, "bold"), fg=TEAL, bg=BORDER).pack(side="left")
-        clr = tk.Label(lf_hdr, text="clear", font=("Segoe UI", 12), fg=SUB, bg=BORDER, cursor="hand2")
+                 font=("Segoe UI", 10, "bold"), fg=TEAL, bg=BORDER).pack(side="left")
+        clr = tk.Label(lf_hdr, text="clear", font=("Segoe UI", 10), fg=SUB, bg=BORDER, cursor="hand2")
         clr.pack(side="right")
         clr.bind("<Button-1>", lambda e: self._clear_log())
 
         self.log = scrolledtext.ScrolledText(
-            lf, font=("Consolas", 11), bg="#080e1a", fg=TEXT,
+            lf, font=("Consolas", 10), bg="#080e1a", fg=TEXT,
             insertbackground=TEAL, relief="flat", bd=0,
             state="disabled", wrap="none", padx=14, pady=10)
         self.log.pack(fill="both", expand=True)
@@ -238,12 +238,12 @@ class NeroAIClient:
         f.pack(fill="x", padx=24, pady=(0, 8))
         inner = tk.Frame(f, bg=PANEL, padx=20, pady=12)
         inner.pack(fill="x")
-        tk.Label(inner, text=label, font=("Segoe UI", 9, "bold"),
+        tk.Label(inner, text=label, font=("Segoe UI", 8, "bold"),
                  fg=TEAL, bg=PANEL).pack(side="left", padx=(0,20))
         for val, lbl in options:
             rb = tk.Radiobutton(
                 inner, text=lbl, variable=var, value=val,
-                font=("Segoe UI", 11), fg=TEXT, bg=PANEL,
+                font=("Segoe UI", 10), fg=TEXT, bg=PANEL,
                 selectcolor=DIM2, activebackground=PANEL, activeforeground=TEAL,
                 indicatoron=0, relief="flat", cursor="hand2",
                 highlightthickness=1, highlightbackground=BORDER,
@@ -251,7 +251,7 @@ class NeroAIClient:
                 command=callback
             )
             rb.pack(side="left", padx=(0,8))
-        lbl_w = tk.Label(inner, text="", font=("Segoe UI", 12), fg=SUB, bg=PANEL)
+        lbl_w = tk.Label(inner, text="", font=("Segoe UI", 10), fg=SUB, bg=PANEL)
         lbl_w.pack(side="left", padx=(10,0))
         setattr(self, desc_var, lbl_w)
         callback()
