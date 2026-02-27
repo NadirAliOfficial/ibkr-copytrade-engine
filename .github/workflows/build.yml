@@ -1,4 +1,4 @@
-name: Build Windows EXE
+name: Build NeroAI CopyTrade EXE
 
 on:
   push:
@@ -7,17 +7,35 @@ on:
 jobs:
   build:
     runs-on: windows-latest
+
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: "3.11"
+
       - name: Install dependencies
-        run: pip install pyinstaller ib_insync requests pillow python-dotenv tzdata
+        run: pip install pyinstaller ib_insync requests pillow tzdata
+
+      - name: Extract icon from Python file
+        shell: python
+        run: |
+          import re, base64
+          with open("NeroAI_CopyTrade.py") as f:
+              code = f.read()
+          b64 = re.search(r'ICON_B64 = "([^"]+)"', code).group(1)
+          with open("neroai.ico", "wb") as f:
+              f.write(base64.b64decode(b64))
+          print(f"Icon extracted: {len(base64.b64decode(b64))} bytes")
+
       - name: Build EXE
         run: pyinstaller build_neroai.spec
-      - name: Upload EXE artifact
+
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: NeroAI_CopyTrade
+          name: NeroAI_CopyTrade_EXE
           path: dist/NeroAI_CopyTrade.exe
