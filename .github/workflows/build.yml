@@ -1,4 +1,4 @@
-name: Build NeroAI CopyTrade EXE
+name: Build Pax Americana EXE
 
 on:
   push:
@@ -20,16 +20,40 @@ jobs:
       - name: Install dependencies
         run: pip install pyinstaller ib_insync requests pillow tzdata
 
-      - name: Extract icon from Python file
+      - name: Build transparent app icon (.ico)
         shell: python
         run: |
-          import re, base64
-          with open("NeroAI_CopyTrade.py", encoding="utf-8") as f:
-              code = f.read()
-          b64 = re.search(r'ICON_B64 = "([^"]+)"', code).group(1)
-          with open("neroai.ico", "wb") as f:
-              f.write(base64.b64decode(b64))
-          print(f"Icon extracted: {len(base64.b64decode(b64))} bytes")
+          from PIL import Image
+          import os
+
+          src = os.path.join("assets", "pax_americana.png")
+          img = Image.open(src).convert("RGBA")
+
+          # Remove near-black background (keep dark blues).
+          threshold = 18
+          px = []
+          for (r, g, b, a) in img.getdata():
+              if r < threshold and g < threshold and b < threshold:
+                  px.append((r, g, b, 0))
+              else:
+                  px.append((r, g, b, a))
+          img.putdata(px)
+
+          # Pad to a square canvas so Windows uses it cleanly everywhere.
+          w, h = img.size
+          side = max(w, h)
+          pad = int(side * 0.10)
+          side2 = side + pad * 2
+          canvas = Image.new("RGBA", (side2, side2), (0, 0, 0, 0))
+          x = (side2 - w) // 2
+          y = (side2 - h) // 2
+          canvas.paste(img, (x, y), img)
+
+          canvas.save(
+              "pax_americana.ico",
+              sizes=[(256,256),(128,128),(64,64),(48,48),(32,32),(16,16)]
+          )
+          print("Icon built: pax_americana.ico")
 
       - name: Build EXE
         run: pyinstaller build_neroai.spec
@@ -37,5 +61,5 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: NeroAI_CopyTrade_EXE
-          path: dist/NeroAI_CopyTrade.exe
+          name: Pax_Americana_EXE
+          path: dist/Pax_Americana.exe

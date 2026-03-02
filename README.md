@@ -1,8 +1,8 @@
-# ⬡ NeroAI — IBKR CopyTrade Engine
+# ⬡ Pax Americana
 
 > Mirror trades from a master IBKR account to unlimited client accounts in real-time.
 
-![NeroAI](https://img.shields.io/badge/NeroAI-CopyTrade-00d4aa?style=for-the-badge)
+![Pax Americana](https://img.shields.io/badge/Pax%20Americana-Engine-00d4aa?style=for-the-badge)
 ![Python](https://img.shields.io/badge/Python-3.10+-blue?style=for-the-badge)
 ![IBKR](https://img.shields.io/badge/Interactive%20Brokers-TWS-red?style=for-the-badge)
 
@@ -23,7 +23,7 @@ Master Machine (Windows RDP / VPS with TWS)
         ▼
 Client Machine (Any Windows Machine)
         │
-        └── NeroAI_CopyTrade.exe
+        └── Pax_Americana.exe
               ├── Connects to client's own TWS
               ├── Polls master API for new orders
               ├── Applies proportional sizing + multiplier
@@ -39,7 +39,7 @@ ibkr-copytrade-engine/
 ├── master.py             # Runs on master Windows machine — TWS + Flask in one
 ├── NeroAI_CopyTrade.py   # Client GUI app — polls master & places orders
 ├── build_neroai.spec     # PyInstaller spec to build Windows .exe
-├── neroai.ico            # NeroAI icon (embedded in .exe)
+├── neroai.ico            # App icon (embedded in .exe)
 ├── requirements.txt      # Python dependencies
 ├── README.md
 └── .github/
@@ -62,7 +62,7 @@ The master machine runs TWS 24/7 and serves orders to all clients.
 
 **Open firewall (run as Administrator in CMD):**
 ```bash
-netsh advfirewall firewall add rule name="NeroAI" dir=in action=allow protocol=TCP localport=5000
+netsh advfirewall firewall add rule name="PaxAmericana" dir=in action=allow protocol=TCP localport=5000
 ```
 
 **Install:**
@@ -93,7 +93,7 @@ python master.py
 
 ### 2. Client Machine (Windows)
 
-Each client runs `NeroAI_CopyTrade.exe` on their own machine with their own TWS.
+Each client runs `Pax_Americana.exe` on their own machine with their own TWS.
 
 **Requirements:**
 - TWS installed, running, and logged in to their IBKR account
@@ -154,9 +154,9 @@ Example:
 ### Via GitHub Actions (recommended)
 
 Push to `main` — GitHub Actions automatically builds the `.exe`.
-Go to **Actions** tab → download `NeroAI_CopyTrade_EXE` artifact.
+Go to **Actions** tab → download `Pax_Americana_EXE` artifact.
 
-The NeroAI icon is automatically extracted and embedded into the `.exe` during build.
+The app icon is automatically extracted and embedded into the `.exe` during build.
 
 ### Manually on Windows
 
@@ -227,4 +227,4 @@ tzdata
 
 Built by **Nadir Ali Khan** — [theteamnak.com](https://theteamnak.com)
 
-© NeroAI | [github.com/NadirAliOfficial](https://github.com/NadirAliOfficial)
+© Pax Americana | [github.com/NadirAliOfficial](https://github.com/NadirAliOfficial)

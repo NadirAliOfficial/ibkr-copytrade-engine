@@ -1,5 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
-# NeroAI CopyTrade Engine — PyInstaller spec
+# Pax Americana — PyInstaller spec
 # Build: pyinstaller build_neroai.spec
 
 block_cipher = None
@@ -8,7 +8,9 @@ a = Analysis(
     ['NeroAI_CopyTrade.py'],
     pathex=[],
     binaries=[],
-    datas=[],
+    datas=[
+        ('assets/pax_americana.png', 'assets'),
+    ],
     hiddenimports=[
         'ib_insync',
         'PIL',
@@ -40,7 +42,7 @@ exe = EXE(
     a.zipfiles,
     a.datas,
     [],
-    name='NeroAI_CopyTrade',
+    name='Pax_Americana',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -53,5 +55,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon='neroai.ico',
+    icon='pax_americana.ico',
 )
