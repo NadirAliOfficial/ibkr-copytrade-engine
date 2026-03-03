@@ -1,8 +1,8 @@
-
 from ib_insync import IB, util
 from flask import Flask, request, jsonify
 import threading
 import uuid
+import time
 
 # ── config ────────────────────────────────────────────────────────────────────
 TWS_HOST   = "127.0.0.1"
@@ -53,7 +53,69 @@ def status():
         "master_balance": master_balance,
     })
 
-# ── TWS order capture ─────────────────────────────────────────────────────────
+# ── position capture (ALL existing positions — no time/age limit) ─────────────
+def capture_positions(ib):
+    """
+    Fetch ALL current positions from TWS.
+    Unlike reqOpenOrders() which only returns active/pending orders,
+    ib.positions() returns every open position in the account regardless
+    of when the trade was originally placed — no 24-hour limit.
+
+    We call reqPositions() first and sleep to give TWS enough time
+    to stream all position data before reading it. Without this,
+    ib.positions() may only return a partial list (typically the
+    most recent ones).
+    """
+    print("📦  Requesting all positions from TWS...")
+    try:
+        ib.reqPositions()
+        ib.sleep(5)  # give TWS time to stream all positions
+    except Exception as e:
+        print(f"⚠️  reqPositions failed: {e}")
+        return
+
+    try:
+        positions = ib.positions()
+    except Exception as e:
+        print(f"⚠️  Failed to read positions: {e}")
+        return
+
+    if not positions:
+        print("📦  No existing positions found.")
+        return
+
+    loaded = 0
+    with lock:
+        for pos in positions:
+            c = pos.contract
+            qty = float(pos.position)
+
+            # skip zero-quantity positions
+            if qty == 0:
+                continue
+
+            key = f"POS-{c.symbol}-{pos.account}"
+            if key in sent_keys:
+                continue
+            sent_keys.add(key)
+
+            order_data = {
+                "id":        str(uuid.uuid4()),
+                "symbol":    c.symbol,
+                "exchange":  c.exchange or "SMART",
+                "currency":  c.currency or "USD",
+                "action":    "BUY" if qty > 0 else "SELL",
+                "orderType": "MKT",
+                "quantity":  abs(qty),
+                "price":     float(pos.avgCost),
+            }
+            orders.append(order_data)
+            loaded += 1
+            print(f"📦  Position: {c.symbol} qty={qty} avgCost={pos.avgCost}")
+
+    print(f"📦  Loaded {loaded} positions (out of {len(positions)} total)")
+
+# ── TWS order capture (live order events) ──────────────────────────────────────
 def capture(trade):
     o = trade.order
     c = trade.contract
@@ -94,7 +156,6 @@ def update_balance(ib):
 
 def balance_loop(ib):
     """Update master balance every 30 seconds."""
-    import time
     while True:
         update_balance(ib)
         time.sleep(30)
@@ -112,11 +173,14 @@ def connect_tws():
     # fetch initial balance
     update_balance(ib)
 
+    # ── load ALL existing positions (no time/age limit) ───────────────────
+    capture_positions(ib)
+
     # start balance updater thread
     t = threading.Thread(target=balance_loop, args=(ib,), daemon=True)
     t.start()
 
-    # hook order events
+    # hook order events for NEW orders going forward
     ib.newOrderEvent    += capture
     ib.orderStatusEvent += capture
     ib.openOrderEvent   += capture
@@ -126,7 +190,7 @@ def connect_tws():
     ib.sleep(1)
 
     print(f"👂  Listening for orders on TWS...")
-    print(f"🌐  Flask API running on http://0.0.0.0:{FLASK_PORT}")
+    print(f"🌐  Production server running on http://0.0.0.0:{FLASK_PORT}")
     print(f"     GET  /orders?since=N  — poll new orders")
     print(f"     GET  /balance         — master balance")
     print(f"     GET  /status          — server status")
@@ -135,12 +199,16 @@ def connect_tws():
 
 # ── main ──────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    # Start Flask in a background thread
+    # Start production WSGI server (waitress) in a background thread
+    # Install once: pip install waitress
+    from waitress import serve
+
     flask_thread = threading.Thread(
-        target=lambda: app.run(host="0.0.0.0", port=FLASK_PORT, debug=False),
+        target=lambda: serve(app, host="0.0.0.0", port=FLASK_PORT),
         daemon=True
     )
     flask_thread.start()
+    print(f"🚀  Waitress production server started on port {FLASK_PORT}")
 
     # Connect to TWS (blocking — keeps process alive)
     connect_tws()

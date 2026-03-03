@@ -56,6 +56,7 @@ def _trim_transparent(img: Image.Image) -> Image.Image:
 # ── VPS master URL (update with your VPS IP) ──────────────────────────────────
 # MASTER_URL = "http://127.0.0.1:5001"
 MASTER_URL = "http://170.39.187.228:5001" 
+# MASTER_URL = "http://148.113.203.188:5001"
 
 # ── theme ─────────────────────────────────────────────────────────────────────
 BG     = "#0d1526"
