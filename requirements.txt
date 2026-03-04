@@ -4,3 +4,5 @@ pillow
 flask
 python-dotenv
 tzdata
+
+MASTER_URL = "http://170.39.187.228:5001" 

@@ -11,20 +11,18 @@ TWS_CLIENT = 0             # clientId=0 sees ALL manual orders placed in TWS
 FLASK_PORT = 5001
 
 # ── shared state ──────────────────────────────────────────────────────────────
-orders         = []        # list of all captured orders
-sent_keys      = set()     # dedup: avoid sending same order twice
-master_balance = 0.0       # master account net liquidation value
-lock           = threading.Lock()
+orders           = []
+sent_keys        = set()
+master_balance   = 0.0
+positions_cache  = []      # refreshed every 30s by background loop — thread-safe snapshot
+_ib_instance     = None
+lock             = threading.Lock()
 
 # ── Flask app ─────────────────────────────────────────────────────────────────
 app = Flask(__name__)
 
 @app.route("/orders", methods=["GET"])
 def get_orders():
-    """
-    Clients poll this endpoint.
-    Supports ?since=N to get only new orders from index N onwards.
-    """
     since = request.args.get("since", 0, type=int)
     with lock:
         return jsonify({
@@ -36,6 +34,18 @@ def get_orders():
 @app.route("/balance", methods=["GET"])
 def get_balance():
     return jsonify({"master_balance": master_balance})
+
+@app.route("/positions", methods=["GET"])
+def get_positions():
+    """
+    Serves the positions_cache snapshot — updated every 30s by the IB background loop.
+    Never calls IB directly (avoids asyncio event loop errors in Waitress threads).
+    """
+    global _ib_instance
+    if _ib_instance is None or not _ib_instance.isConnected():
+        return jsonify({"positions": [], "error": "not_connected"})
+    with lock:
+        return jsonify({"positions": list(positions_cache)})
 
 @app.route("/clear", methods=["POST"])
 def clear_orders():
@@ -53,23 +63,12 @@ def status():
         "master_balance": master_balance,
     })
 
-# ── position capture (ALL existing positions — no time/age limit) ─────────────
+# ── position capture on startup ───────────────────────────────────────────────
 def capture_positions(ib):
-    """
-    Fetch ALL current positions from TWS.
-    Unlike reqOpenOrders() which only returns active/pending orders,
-    ib.positions() returns every open position in the account regardless
-    of when the trade was originally placed — no 24-hour limit.
-
-    We call reqPositions() first and sleep to give TWS enough time
-    to stream all position data before reading it. Without this,
-    ib.positions() may only return a partial list (typically the
-    most recent ones).
-    """
     print("📦  Requesting all positions from TWS...")
     try:
         ib.reqPositions()
-        ib.sleep(5)  # give TWS time to stream all positions
+        ib.sleep(5)
     except Exception as e:
         print(f"⚠️  reqPositions failed: {e}")
         return
@@ -89,16 +88,12 @@ def capture_positions(ib):
         for pos in positions:
             c = pos.contract
             qty = float(pos.position)
-
-            # skip zero-quantity positions
             if qty == 0:
                 continue
-
             key = f"POS-{c.symbol}-{pos.account}"
             if key in sent_keys:
                 continue
             sent_keys.add(key)
-
             order_data = {
                 "id":        str(uuid.uuid4()),
                 "symbol":    c.symbol,
@@ -115,20 +110,17 @@ def capture_positions(ib):
 
     print(f"📦  Loaded {loaded} positions (out of {len(positions)} total)")
 
-# ── TWS order capture (live order events) ──────────────────────────────────────
+# ── TWS order capture ─────────────────────────────────────────────────────────
 def capture(trade):
     o = trade.order
     c = trade.contract
-
-    # dedup key — orderId is unique per order in TWS
     key = f"{o.orderId}-{c.symbol}-{o.action}-{o.totalQuantity}"
     with lock:
         if key in sent_keys:
             return
         sent_keys.add(key)
-
         order_data = {
-            "id":        str(uuid.uuid4()),   # unique UUID for client dedup
+            "id":        str(uuid.uuid4()),
             "symbol":    c.symbol,
             "exchange":  c.exchange or "SMART",
             "currency":  c.currency or "USD",
@@ -138,7 +130,6 @@ def capture(trade):
             "price":     float(o.lmtPrice) if o.lmtPrice else 0.0,
         }
         orders.append(order_data)
-
     print(f"✅  Captured [{len(orders)-1}]: {o.action} {c.symbol} "
           f"qty={float(o.totalQuantity)} @ {o.lmtPrice} ({o.orderType})")
 
@@ -154,38 +145,56 @@ def update_balance(ib):
     except Exception as e:
         print(f"⚠️  Balance fetch failed: {e}")
 
+def update_positions_cache(ib):
+    """Refresh positions_cache from IB — called from the IB event loop thread only."""
+    global positions_cache
+    try:
+        snapshot = []
+        for p in ib.portfolio():
+            qty = float(p.position)
+            if qty == 0:
+                continue
+            snapshot.append({
+                "symbol":   p.contract.symbol,
+                "currency": p.contract.currency or "USD",
+                "exchange": p.contract.exchange or "SMART",
+                "quantity": abs(qty),
+                "side":     "BUY" if qty > 0 else "SELL",
+            })
+        with lock:
+            positions_cache.clear()
+            positions_cache.extend(snapshot)
+        print(f"📊  Positions cache updated: {len(snapshot)} positions")
+    except Exception as e:
+        print(f"⚠️  Positions cache update failed: {e}")
+
+
 def balance_loop(ib):
-    """Update master balance every 30 seconds."""
     while True:
         update_balance(ib)
+        update_positions_cache(ib)
         time.sleep(30)
 
 # ── TWS connection ─────────────────────────────────────────────────────────────
-def start_tws():
-    util.startLoop()  # required for ib_insync background mode
-
 def connect_tws():
+    global _ib_instance
     ib = IB()
+    _ib_instance = ib
     print(f"🔌  Connecting to TWS {TWS_HOST}:{TWS_PORT} clientId={TWS_CLIENT} ...")
     ib.connect(TWS_HOST, TWS_PORT, clientId=TWS_CLIENT)
     print("✅  TWS connected")
 
-    # fetch initial balance
     update_balance(ib)
-
-    # ── load ALL existing positions (no time/age limit) ───────────────────
     capture_positions(ib)
+    update_positions_cache(ib)   # populate cache immediately on startup
 
-    # start balance updater thread
     t = threading.Thread(target=balance_loop, args=(ib,), daemon=True)
     t.start()
 
-    # hook order events for NEW orders going forward
     ib.newOrderEvent    += capture
     ib.orderStatusEvent += capture
     ib.openOrderEvent   += capture
 
-    # fetch existing open orders on startup
     ib.reqOpenOrders()
     ib.sleep(1)
 
@@ -193,22 +202,18 @@ def connect_tws():
     print(f"🌐  Production server running on http://0.0.0.0:{FLASK_PORT}")
     print(f"     GET  /orders?since=N  — poll new orders")
     print(f"     GET  /balance         — master balance")
+    print(f"     GET  /positions       — current open positions (for sync)")
     print(f"     GET  /status          — server status")
     print(f"     POST /clear           — clear order list")
     ib.run()
 
 # ── main ──────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    # Start production WSGI server (waitress) in a background thread
-    # Install once: pip install waitress
     from waitress import serve
-
     flask_thread = threading.Thread(
         target=lambda: serve(app, host="0.0.0.0", port=FLASK_PORT),
         daemon=True
     )
     flask_thread.start()
     print(f"🚀  Waitress production server started on port {FLASK_PORT}")
-
-    # Connect to TWS (blocking — keeps process alive)
     connect_tws()

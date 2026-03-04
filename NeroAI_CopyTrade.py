@@ -7,15 +7,11 @@ from datetime import datetime
 from PIL import Image, ImageTk
 from ib_insync import IB, Stock, MarketOrder, LimitOrder
 
-
 def _resource_path(rel_path: str) -> str:
-    """Resolve paths for dev runs and PyInstaller onefile."""
     base = getattr(sys, "_MEIPASS", os.path.abspath(os.path.dirname(__file__)))
     return os.path.join(base, rel_path)
 
-
 def _remove_near_black_bg(img: Image.Image, threshold: int = 18) -> Image.Image:
-    """Make near-black pixels transparent (for icons/logos)."""
     rgba = img.convert("RGBA")
     new_px = []
     for (r, g, b, a) in rgba.getdata():
@@ -26,37 +22,24 @@ def _remove_near_black_bg(img: Image.Image, threshold: int = 18) -> Image.Image:
     rgba.putdata(new_px)
     return rgba
 
-
 def _pad_to_square(img: Image.Image, pad_ratio: float = 0.10) -> Image.Image:
-    """
-    Pad to a transparent square canvas (prevents macOS Dock stretching).
-    pad_ratio adds breathing room around the content.
-    """
     rgba = img.convert("RGBA")
     w, h = rgba.size
     side = max(w, h)
     pad = int(side * pad_ratio)
     side2 = side + pad * 2
     canvas = Image.new("RGBA", (side2, side2), (0, 0, 0, 0))
-    x = (side2 - w) // 2
-    y = (side2 - h) // 2
-    canvas.paste(rgba, (x, y), rgba)
+    canvas.paste(rgba, ((side2 - w) // 2, (side2 - h) // 2), rgba)
     return canvas
 
-
 def _trim_transparent(img: Image.Image) -> Image.Image:
-    """Crop away fully-transparent borders."""
     rgba = img.convert("RGBA")
-    alpha = rgba.split()[-1]
-    bbox = alpha.getbbox()
-    if not bbox:
-        return rgba
-    return rgba.crop(bbox)
+    bbox = rgba.split()[-1].getbbox()
+    return rgba.crop(bbox) if bbox else rgba
 
-# ── VPS master URL (update with your VPS IP) ──────────────────────────────────
-# MASTER_URL = "http://127.0.0.1:5001"
-MASTER_URL = "http://170.39.187.228:5001" 
-# MASTER_URL = "http://148.113.203.188:5001"
+# ── config ────────────────────────────────────────────────────────────────────
+MASTER_URL        = "http://170.39.187.228:5001"
+SYNC_INTERVAL_SEC = 15   # position sync check every 15 seconds
 
 # ── theme ─────────────────────────────────────────────────────────────────────
 BG     = "#0d1526"
@@ -85,58 +68,59 @@ class PaxAmericanaClient:
         self.root.configure(bg=BG)
         self.root.resizable(True, True)
 
-        self.ib              = IB()
-        self.running         = False
-        self._last_idx       = 0
-        self._stop           = threading.Event()
-        self._counts         = {"received": 0, "placed": 0, "failed": 0}
-        self._mode           = tk.StringVar(value="new")
-        self._trade_mode     = tk.StringVar(value="long_short")
-        self._account_mode   = tk.StringVar(value="live")   # live | paper
-        self._multiplier     = tk.DoubleVar(value=1.0)
-        self._max_drawdown   = tk.DoubleVar(value=10.0)
-        self._start_balance  = 0.0
-        self._master_balance = 0.0
-        self._drawdown_hit   = False
-        self._last_poll_warn = 0.0
+        self.ib                    = IB()
+        self.running               = False
+        self._last_idx             = 0
+        self._stop                 = threading.Event()
+        self._counts               = {"received": 0, "placed": 0, "failed": 0}
+        self._mode                 = tk.StringVar(value="new")
+        self._trade_mode           = tk.StringVar(value="long_short")
+        self._account_mode         = tk.StringVar(value="live")
+        self._multiplier           = tk.DoubleVar(value=1.0)
+        self._max_drawdown         = tk.DoubleVar(value=10.0)
+        self._start_balance        = 0.0
+        self._master_balance       = 0.0
+        self._drawdown_hit         = False
+        self._last_poll_warn       = 0.0
+        self._last_idx_needs_reset = True
+        self._last_sync_time       = 0.0
+        self._sync_done_close      = set()
+        self._sync_done_open       = set()
+        self._positions_cache      = {}      # symbol -> {position, contract} — updated by background thread
+        self._positions_cache_lock = threading.Lock()
+        self._close_all_done       = set()   # symbols already submitted via Close All this session
 
         self._build_ui()
         self._set_icon()
 
     # ── icon ──────────────────────────────────────────────────────────────────
     def _set_icon(self):
-        # Prefer the Pax Americana PNG icon (transparent), fall back to embedded ICO.
         try:
             icon_path = _resource_path(os.path.join("assets", "pax_americana.png"))
             pil_icon = Image.open(icon_path)
             pil_icon = _remove_near_black_bg(pil_icon)
             pil_icon = _trim_transparent(pil_icon)
             pil_icon = _pad_to_square(pil_icon, pad_ratio=0.04)
-
-            # Provide multiple sizes for crisp Dock/taskbar icons on macOS/Windows.
-            # Important: pass largest first (macOS otherwise may upscale tiny icons).
-            sizes = [512, 256, 128, 64, 32, 16]
             self._app_icon_imgs = []
-            for s in sizes:
+            for s in [512, 256, 128, 64, 32, 16]:
                 im = pil_icon.resize((s, s), Image.LANCZOS)
                 self._app_icon_imgs.append(ImageTk.PhotoImage(im))
             self.root.iconphoto(True, *self._app_icon_imgs)
             return
         except Exception:
             pass
-
         try:
-            import tempfile
-            tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".ico")
-            tmp.write(base64.b64decode(ICON_B64))
-            tmp.close()
-            self.root.iconbitmap(tmp.name)
+            if ICON_B64:
+                import tempfile
+                tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".ico")
+                tmp.write(base64.b64decode(ICON_B64))
+                tmp.close()
+                self.root.iconbitmap(tmp.name)
         except Exception:
             pass
 
     # ── UI ────────────────────────────────────────────────────────────────────
     def _build_ui(self):
-        # header
         hdr = tk.Frame(self.root, bg=PANEL2)
         hdr.pack(fill="x")
         stripe = tk.Canvas(hdr, height=3, bg=BG, highlightthickness=0)
@@ -147,24 +131,23 @@ class PaxAmericanaClient:
             stripe.create_line(i, 0, i, 3, fill=f"#00{g:02x}{b:02x}")
         inner = tk.Frame(hdr, bg=PANEL2, padx=20, pady=12)
         inner.pack(fill="x")
-        pil_img = Image.open(io.BytesIO(base64.b64decode(LOGO_B64))).convert("RGBA")
-        # Make logo background transparent (based on top-left pixel color).
+
         try:
-            bg = pil_img.getpixel((0, 0))
-            if isinstance(bg, tuple) and len(bg) == 4:
-                bg = bg[:3]
-            tol = 28
-            new_px = []
-            for (r, g, b, a) in pil_img.getdata():
-                if abs(r - bg[0]) <= tol and abs(g - bg[1]) <= tol and abs(b - bg[2]) <= tol:
-                    new_px.append((r, g, b, 0))
-                else:
-                    new_px.append((r, g, b, a))
-            pil_img.putdata(new_px)
+            if LOGO_B64:
+                pil_img = Image.open(io.BytesIO(base64.b64decode(LOGO_B64))).convert("RGBA")
+                try:
+                    bg_pixel = pil_img.getpixel((0, 0))[:3]
+                    tol = 28
+                    new_px = [(r, g, b, 0) if abs(r-bg_pixel[0])<=tol and abs(g-bg_pixel[1])<=tol and abs(b-bg_pixel[2])<=tol else (r, g, b, a)
+                              for (r, g, b, a) in pil_img.getdata()]
+                    pil_img.putdata(new_px)
+                except Exception:
+                    pass
+                self._logo_img = ImageTk.PhotoImage(pil_img)
+                tk.Label(inner, image=self._logo_img, bg=PANEL2, bd=0).pack(side="left")
         except Exception:
             pass
-        self._logo_img = ImageTk.PhotoImage(pil_img)
-        tk.Label(inner, image=self._logo_img, bg=PANEL2, bd=0).pack(side="left")
+
         tk.Label(inner, text="  Pax Americana",
                  font=("Segoe UI", 10), fg=SUB, bg=PANEL2).pack(side="left")
         self._time_lbl = tk.Label(inner, text="", font=("Courier New", 10), fg=SUB, bg=PANEL2)
@@ -184,7 +167,7 @@ class PaxAmericanaClient:
                                   font=("Segoe UI", 10), fg=SUB, bg=BG)
         self._bal_lbl.pack(side="right")
 
-        # ── connection panel ─────────────────────────────────────────────────
+        # connection panel
         cp = tk.Frame(self.root, bg=PANEL, highlightthickness=1, highlightbackground=BORDER)
         cp.pack(fill="x", padx=24, pady=(4, 8))
         ci = tk.Frame(cp, bg=PANEL, padx=20, pady=10)
@@ -192,13 +175,12 @@ class PaxAmericanaClient:
         tk.Label(ci, text="TWS CONNECTION", font=("Segoe UI", 8, "bold"),
                  fg=TEAL, bg=PANEL).grid(row=0, column=0, columnspan=8, sticky="w", pady=(0,8))
 
-        # Paper / Live toggle
         tk.Label(ci, text="Mode", font=("Segoe UI", 10), fg=SUB, bg=PANEL).grid(
             row=1, column=0, sticky="w", padx=(0,4))
         acct_frame = tk.Frame(ci, bg=PANEL)
         acct_frame.grid(row=2, column=0, padx=(0,20))
         for val, lbl in [("live","Live"), ("paper","Paper")]:
-            rb = tk.Radiobutton(
+            tk.Radiobutton(
                 acct_frame, text=lbl, variable=self._account_mode, value=val,
                 font=("Segoe UI", 10), fg=TEXT, bg=PANEL,
                 selectcolor=DIM2, activebackground=PANEL, activeforeground=TEAL,
@@ -206,8 +188,7 @@ class PaxAmericanaClient:
                 highlightthickness=1, highlightbackground=BORDER,
                 highlightcolor=TEAL, padx=12, pady=5,
                 command=self._on_account_mode_change
-            )
-            rb.pack(side="left", padx=(0,4))
+            ).pack(side="left", padx=(0,4))
 
         self._btn = tk.Button(ci, text="▶   START", font=("Segoe UI", 11, "bold"),
                                bg=TEAL, fg="#0a1220", relief="flat",
@@ -223,25 +204,15 @@ class PaxAmericanaClient:
         )
         self._close_all_btn.grid(row=2, column=2, padx=(10, 0))
 
-        # ── copy mode ────────────────────────────────────────────────────────
-        self._add_toggle_panel(
-            label="COPY MODE",
-            var=self._mode,
-            options=[("new","New Trades Only"),("all","Existing + New Trades")],
-            desc_var="_mode_lbl",
-            callback=self._on_mode_change
-        )
+        self._add_toggle_panel("EXECUTION MODE", self._mode,
+            [("new","New Trades Only"),("all","Existing + New Trades")],
+            "_mode_lbl", self._on_mode_change)
 
-        # ── trading mode ─────────────────────────────────────────────────────
-        self._add_toggle_panel(
-            label="TRADING MODE",
-            var=self._trade_mode,
-            options=[("long_short","Long & Short"),("long_only","Long Only")],
-            desc_var="_trade_lbl",
-            callback=self._on_trade_mode_change
-        )
+        self._add_toggle_panel("TRADING MODE", self._trade_mode,
+            [("long_short","Long & Short"),("long_only","Long Only")],
+            "_trade_lbl", self._on_trade_mode_change)
 
-        # ── risk management ───────────────────────────────────────────────────
+        # risk management
         rm = tk.Frame(self.root, bg=PANEL, highlightthickness=1, highlightbackground=BORDER)
         rm.pack(fill="x", padx=24, pady=(0, 8))
         rm_inner = tk.Frame(rm, bg=PANEL, padx=20, pady=10)
@@ -249,47 +220,38 @@ class PaxAmericanaClient:
         tk.Label(rm_inner, text="RISK MANAGEMENT", font=("Segoe UI", 8, "bold"),
                  fg=TEAL, bg=PANEL).grid(row=0, column=0, columnspan=6, sticky="w", pady=(0,10))
 
-        # Multiplier slider
         tk.Label(rm_inner, text="Size Multiplier", font=("Segoe UI", 10), fg=SUB, bg=PANEL).grid(
             row=1, column=0, sticky="w", padx=(0,10))
         self._mult_val_lbl = tk.Label(rm_inner, text="1.0×",
                                        font=("Segoe UI", 10, "bold"), fg=TEAL, bg=PANEL, width=5)
         self._mult_val_lbl.grid(row=1, column=1, padx=(0,10))
-        mult_slider = tk.Scale(rm_inner, from_=0.1, to=5.0, resolution=0.1,
-                                orient="horizontal", variable=self._multiplier,
-                                bg=PANEL, fg=TEXT, troughcolor=DIM2,
-                                highlightthickness=0, relief="flat",
-                                activebackground=TEAL, sliderrelief="flat",
-                                length=200, showvalue=0,
-                                command=self._on_mult_change)
-        mult_slider.grid(row=1, column=2, padx=(0,40))
+        tk.Scale(rm_inner, from_=0.1, to=5.0, resolution=0.1, orient="horizontal",
+                 variable=self._multiplier, bg=PANEL, fg=TEXT, troughcolor=DIM2,
+                 highlightthickness=0, relief="flat", activebackground=TEAL,
+                 sliderrelief="flat", length=200, showvalue=0,
+                 command=self._on_mult_change).grid(row=1, column=2, padx=(0,40))
         tk.Label(rm_inner, text="0.1×", font=("Segoe UI", 7), fg=SUB, bg=PANEL).grid(row=2, column=2, sticky="w")
         tk.Label(rm_inner, text="5.0×", font=("Segoe UI", 7), fg=SUB, bg=PANEL).grid(row=2, column=2, sticky="e", padx=(0,40))
 
-        # Max drawdown slider
         tk.Label(rm_inner, text="Max Drawdown", font=("Segoe UI", 10), fg=SUB, bg=PANEL).grid(
             row=1, column=3, sticky="w", padx=(0,10))
         self._dd_val_lbl = tk.Label(rm_inner, text="10.0%",
                                      font=("Segoe UI", 10, "bold"), fg=RED, bg=PANEL, width=6)
         self._dd_val_lbl.grid(row=1, column=4, padx=(0,10))
-        dd_slider = tk.Scale(rm_inner, from_=1.0, to=50.0, resolution=0.5,
-                              orient="horizontal", variable=self._max_drawdown,
-                              bg=PANEL, fg=TEXT, troughcolor=DIM2,
-                              highlightthickness=0, relief="flat",
-                              activebackground=RED, sliderrelief="flat",
-                              length=200, showvalue=0,
-                              command=self._on_dd_change)
-        dd_slider.grid(row=1, column=5, padx=(0,10))
-        tk.Label(rm_inner, text="1%", font=("Segoe UI", 7), fg=SUB, bg=PANEL).grid(row=2, column=5, sticky="w")
+        tk.Scale(rm_inner, from_=1.0, to=50.0, resolution=0.5, orient="horizontal",
+                 variable=self._max_drawdown, bg=PANEL, fg=TEXT, troughcolor=DIM2,
+                 highlightthickness=0, relief="flat", activebackground=RED,
+                 sliderrelief="flat", length=200, showvalue=0,
+                 command=self._on_dd_change).grid(row=1, column=5, padx=(0,10))
+        tk.Label(rm_inner, text="1%",  font=("Segoe UI", 7), fg=SUB, bg=PANEL).grid(row=2, column=5, sticky="w")
         tk.Label(rm_inner, text="50%", font=("Segoe UI", 7), fg=SUB, bg=PANEL).grid(row=2, column=5, sticky="e", padx=(0,10))
 
-        # Risk info label
         self._risk_lbl = tk.Label(rm_inner,
-            text="Proportional sizing active. Trades will stop if drawdown exceeds 10.0%",
+            text="Proportional sizing active. Trading stops if drawdown exceeds 10.0%",
             font=("Segoe UI", 10), fg=SUB, bg=PANEL)
         self._risk_lbl.grid(row=3, column=0, columnspan=6, sticky="w", pady=(8,0))
 
-        # ── stat cards ────────────────────────────────────────────────────────
+        # stat cards
         cards = tk.Frame(self.root, bg=BG)
         cards.pack(fill="x", padx=24, pady=(0, 8))
         self._stat_labels = {}
@@ -304,7 +266,7 @@ class PaxAmericanaClient:
             v.pack(pady=(2,10))
             self._stat_labels[key] = v
 
-        # ── log ───────────────────────────────────────────────────────────────
+        # log
         lf = tk.Frame(self.root, bg=PANEL, highlightthickness=1, highlightbackground=BORDER)
         lf.pack(fill="both", expand=True, padx=24, pady=(0, 16))
         lf_hdr = tk.Frame(lf, bg=BORDER, padx=16, pady=6)
@@ -313,14 +275,10 @@ class PaxAmericanaClient:
                  font=("Segoe UI", 10, "bold"), fg=TEAL, bg=BORDER).pack(side="left")
         actions = tk.Frame(lf_hdr, bg=BORDER)
         actions.pack(side="right")
-
-        close_all = tk.Label(
-            actions, text="CLOSE ALL TRADES", font=("Segoe UI", 10, "bold"),
-            fg=YELLOW, bg=BORDER, cursor="hand2"
-        )
-        close_all.pack(side="right", padx=(12, 0))
-        close_all.bind("<Button-1>", lambda e: self._close_all_trades())
-
+        ca_lbl = tk.Label(actions, text="CLOSE ALL TRADES",
+                          font=("Segoe UI", 10, "bold"), fg=YELLOW, bg=BORDER, cursor="hand2")
+        ca_lbl.pack(side="right", padx=(12, 0))
+        ca_lbl.bind("<Button-1>", lambda e: self._close_all_trades())
         clr = tk.Label(actions, text="clear", font=("Segoe UI", 10), fg=SUB, bg=BORDER, cursor="hand2")
         clr.pack(side="right")
         clr.bind("<Button-1>", lambda e: self._clear_log())
@@ -346,55 +304,43 @@ class PaxAmericanaClient:
         tk.Label(inner, text=label, font=("Segoe UI", 8, "bold"),
                  fg=TEAL, bg=PANEL).pack(side="left", padx=(0,20))
         for val, lbl in options:
-            rb = tk.Radiobutton(
+            tk.Radiobutton(
                 inner, text=lbl, variable=var, value=val,
                 font=("Segoe UI", 10), fg=TEXT, bg=PANEL,
                 selectcolor=DIM2, activebackground=PANEL, activeforeground=TEAL,
                 indicatoron=0, relief="flat", cursor="hand2",
                 highlightthickness=1, highlightbackground=BORDER,
-                highlightcolor=TEAL, padx=14, pady=6,
-                command=callback
-            )
-            rb.pack(side="left", padx=(0,8))
+                highlightcolor=TEAL, padx=14, pady=6, command=callback
+            ).pack(side="left", padx=(0,8))
         lbl_w = tk.Label(inner, text="", font=("Segoe UI", 10), fg=SUB, bg=PANEL)
         lbl_w.pack(side="left", padx=(10,0))
         setattr(self, desc_var, lbl_w)
         callback()
 
     # ── callbacks ─────────────────────────────────────────────────────────────
-    def _on_account_mode_change(self):
-        pass  # port is auto-set in _start() based on account mode
+    def _on_account_mode_change(self): pass
 
     def _on_mode_change(self):
-        if self._mode.get() == "new":
-            self._mode_lbl.config(text="Only new orders placed after START will be mirrored")
-        else:
-            self._mode_lbl.config(text="All current open orders + new orders will be mirrored")
+        self._mode_lbl.config(text="Only new orders placed after START will be executed"
+            if self._mode.get() == "new" else "All current open orders + new orders will be executed")
 
     def _on_trade_mode_change(self):
-        if self._trade_mode.get() == "long_only":
-            self._trade_lbl.config(text="SELL orders from master will be skipped")
-        else:
-            self._trade_lbl.config(text="BUY and SELL orders will be mirrored")
+        self._trade_lbl.config(text="SELL orders will be skipped"
+            if self._trade_mode.get() == "long_only" else "BUY and SELL orders will be executed")
 
     def _on_mult_change(self, val):
-        v = float(val)
-        self._mult_val_lbl.config(text=f"{v:.1f}×")
+        self._mult_val_lbl.config(text=f"{float(val):.1f}×")
         self._update_risk_lbl()
 
     def _on_dd_change(self, val):
-        v = float(val)
-        self._dd_val_lbl.config(text=f"{v:.1f}%")
+        self._dd_val_lbl.config(text=f"{float(val):.1f}%")
         self._update_risk_lbl()
 
     def _update_risk_lbl(self):
-        m  = self._multiplier.get()
-        dd = self._max_drawdown.get()
         self._risk_lbl.config(
-            text=f"Proportional sizing × {m:.1f}. Copying stops if drawdown exceeds {dd:.1f}%"
-        )
+            text=f"Proportional sizing × {self._multiplier.get():.1f}. "
+                 f"Trading stops if drawdown exceeds {self._max_drawdown.get():.1f}%")
 
-    # ── clock ──────────────────────────────────────────────────────────────────
     def _tick_clock(self):
         self._time_lbl.config(text=datetime.now().strftime("%Y-%m-%d  %H:%M:%S"))
         self.root.after(1000, self._tick_clock)
@@ -416,10 +362,9 @@ class PaxAmericanaClient:
     def _log_ok(self, msg):    self._log_raw([(msg, "ok")])
 
     def _log_order(self, o, qty):
-        action = o["action"]
-        tag = "buy" if action == "BUY" else "sell"
+        tag = "buy" if o["action"] == "BUY" else "sell"
         self._log_raw([
-            (f"{action:<4s}  ", tag),
+            (f"{o['action']:<4s}  ", tag),
             (f"{o['symbol']:<6s}", "symbol"),
             (f"  qty={qty}  {o['orderType']} @ ", "dim"),
             (f"{o['price']}", "price"),
@@ -430,112 +375,225 @@ class PaxAmericanaClient:
         self.log.delete("1.0", "end")
         self.log.config(state="disabled")
 
-    # ── emergency actions ─────────────────────────────────────────────────────
-    def _close_all_trades(self):
-        if not self.running:
-            self._log_warn("Close all: not connected. Press START first.")
-            return
-
-        ok = messagebox.askyesno(
-            "Close all trades",
-            "This will CANCEL all open orders and CLOSE ALL open positions\n"
-            "in your connected TWS account using MARKET orders.\n\n"
-            "Are you sure?"
-        )
-        if not ok:
-            return
-
-        threading.Thread(target=self._close_all_trades_worker, daemon=True).start()
-
-    def _close_all_trades_worker(self):
-        try:
-            self.root.after(0, lambda: self._log_warn("Close all: cancelling open orders…"))
-
-            # Refresh open orders/trades list, then cancel.
-            try:
-                self.ib.reqAllOpenOrders()
-                self.ib.sleep(0.5)
-            except Exception:
-                pass
-
-            cancelled = 0
-            try:
-                for t in list(self.ib.openTrades()):
-                    try:
-                        self.ib.cancelOrder(t.order)
-                        cancelled += 1
-                    except Exception:
-                        pass
-                self.ib.sleep(0.5)
-            except Exception:
-                pass
-
-            self.root.after(0, lambda c=cancelled: self._log_info(f"Close all: cancelled {c} open orders."))
-
-            # Close all positions (flatten).
-            positions = []
-            try:
-                positions = list(self.ib.positions())
-            except Exception:
-                positions = []
-
-            if not positions:
-                self.root.after(0, lambda: self._log_ok("Close all: no open positions to close."))
-                return
-
-            self.root.after(0, lambda n=len(positions): self._log_warn(f"Close all: closing {n} positions…"))
-
-            closed = 0
-            for p in positions:
-                qty = float(getattr(p, "position", 0) or 0)
-                if qty == 0:
-                    continue
-
-                action = "SELL" if qty > 0 else "BUY"
-                abs_qty = int(abs(qty))
-                if abs_qty <= 0:
-                    continue
-
-                contract = getattr(p, "contract", None)
-                if contract is None:
-                    continue
-
-                try:
-                    self.ib.qualifyContracts(contract)
-                except Exception:
-                    pass
-
-                try:
-                    order = MarketOrder(action, abs_qty)
-                    order.tif = "DAY"
-                    self.ib.placeOrder(contract, order)
-                    closed += 1
-                    sym = getattr(contract, "symbol", "?")
-                    self.root.after(
-                        0,
-                        lambda s=sym, a=action, q=abs_qty: self._log_info(f"Close all: {a} {s} qty={q} (MKT)")
-                    )
-                    self.ib.sleep(0.2)
-                except Exception as e:
-                    sym = getattr(contract, "symbol", "?")
-                    self.root.after(0, lambda s=sym: self._log_err(f"Close all: failed {s}"))
-
-            self.root.after(0, lambda c=closed: self._log_ok(f"Close all: submitted {c} closing orders."))
-        except Exception as e:
-            self.root.after(0, lambda e=e: self._log_err(f"Close all error: {e}"))
-
-    # ── status ─────────────────────────────────────────────────────────────────
     def _set_status(self, connected):
         c = GREEN if connected else RED
-        t = "  Connected  —  Mirroring active" if connected else "  Disconnected"
         self._dot.config(fg=c)
-        self._status_lbl.config(text=t, fg=c)
+        self._status_lbl.config(
+            text="  Connected  —  Scanning active" if connected else "  Disconnected", fg=c)
 
     def _inc(self, key):
         self._counts[key] += 1
         self._stat_labels[key].config(text=str(self._counts[key]))
 
-    # ── start / stop ───────────────────────────────────────────────────────────
+    # ── close all trades ──────────────────────────────────────────────────────
+    def _close_all_trades(self):
+        if not self.running:
+            self._log_warn("Not connected — press START first.")
+            return
+        if not messagebox.askyesno(
+            "Close All Trades",
+            "This will CANCEL all open orders and CLOSE ALL open positions\n"
+            "using MARKET orders.\n\nAre you sure?"
+        ):
+            return
+        threading.Thread(target=self._close_all_worker, daemon=True).start()
+
+    def _close_all_worker(self):
+        import asyncio
+        try:
+            asyncio.get_event_loop()
+        except RuntimeError:
+            asyncio.set_event_loop(asyncio.new_event_loop())
+
+        try:
+            # Step 1: cancel any pending open orders (don't use reqAllOpenOrders — it hangs)
+            self.root.after(0, lambda: self._log_warn("Close all: cancelling pending orders…"))
+            cancelled = 0
+            try:
+                for t in list(self.ib.trades()):
+                    st = t.orderStatus.status
+                    if st in ("Submitted", "PreSubmitted", "PendingSubmit", "PendingCancel"):
+                        try:
+                            self.ib.cancelOrder(t.order)
+                            cancelled += 1
+                        except Exception:
+                            pass
+                time.sleep(0.8)
+            except Exception:
+                pass
+            self.root.after(0, lambda c=cancelled: self._log_info(f"Cancelled {c} pending orders."))
+
+            # Step 2: read from positions cache — populated by main run loop
+            self.root.after(0, lambda: self._log_warn("Close all: reading positions…"))
+            with self._positions_cache_lock:
+                snapshot = dict(self._positions_cache)
+
+            # Filter out symbols already submitted this session
+            pending = {s: d for s, d in snapshot.items() if s not in self._close_all_done}
+
+            if not pending:
+                self.root.after(0, lambda: self._log_ok("No new positions to close — orders already submitted."))
+                return
+
+            self.root.after(0, lambda n=len(pending): self._log_warn(f"Closing {n} positions…"))
+
+            # Step 3: place closing market orders
+            closed = 0
+            for sym, cdata in pending.items():
+                try:
+                    qty     = float(cdata["position"])
+                    abs_qty = int(abs(qty))
+                    if abs_qty == 0:
+                        continue
+                    action   = "SELL" if qty > 0 else "BUY"
+                    contract = cdata["contract"]
+                    currency = contract.currency or "USD"
+
+                    c         = Stock(symbol=sym, exchange="SMART", currency=currency)
+                    c.conId   = contract.conId
+                    order     = MarketOrder(action, abs_qty)
+                    order.tif = "DAY"
+
+                    self.ib.placeOrder(c, order)
+                    self._close_all_done.add(sym)  # never re-submit this symbol
+                    closed += 1
+                    self.root.after(0, lambda s=sym, a=action, q=abs_qty:
+                        self._log_ok(f"Close all: {a} {s}  qty={q}  MKT ✓"))
+                    time.sleep(0.3)
+                except Exception as e:
+                    sym2 = sym
+                    self.root.after(0, lambda s=sym2, e=e:
+                        self._log_err(f"Close all failed {s}: {e}"))
+
+            self.root.after(0, lambda c=closed: self._log_ok(f"Done — submitted {c} closing orders."))
+
+        except Exception as e:
+            self.root.after(0, lambda e=e: self._log_err(f"Close all error: {e}"))
+
+    # ── position sync ─────────────────────────────────────────────────────────
+    def _refresh_positions_cache(self):
+        """
+        Called from the main run loop (which has the IB event loop).
+        Reads ib.portfolio() and stores a snapshot into _positions_cache.
+        All other methods read from this cache — never call ib.portfolio() directly.
+        """
+        try:
+            snapshot = {}
+            for item in self.ib.portfolio():
+                qty = float(item.position)
+                if qty == 0:
+                    continue
+                snapshot[item.contract.symbol] = {
+                    "position": qty,
+                    "contract": item.contract,
+                }
+            with self._positions_cache_lock:
+                self._positions_cache.clear()
+                self._positions_cache.update(snapshot)
+        except Exception:
+            pass
+
+    def _sync_positions(self):
+        """
+        Every SYNC_INTERVAL_SEC seconds, compare master positions vs client positions.
+
+        Case 1: Master HAS symbol, Client DOES NOT  → open it on client (once per session)
+        Case 2: Client HAS symbol, Master DOES NOT  → close it on client (once per session)
+
+        _sync_done_close / _sync_done_open are session-scoped sets.
+        Once an order is submitted for a symbol, we NEVER resubmit it this session.
+        User must press STOP then START to reset.
+        """
+        import asyncio
+        try:
+            asyncio.get_event_loop()
+        except RuntimeError:
+            asyncio.set_event_loop(asyncio.new_event_loop())
+
+        # Fetch master positions
+        try:
+            base_url = MASTER_URL.rstrip("/")
+            resp = requests.get(f"{base_url}/positions", timeout=6).json()
+            master_positions = resp.get("positions", [])
+            # Safety guard: if master returns an error or empty list, it may not be
+            # properly connected. Never close client positions based on an empty response —
+            # that would wipe out all positions incorrectly.
+            if resp.get("error"):
+                self.root.after(0, lambda: self._log_warn("Sync skipped — master not connected."))
+                return
+        except Exception:
+            return  # network issue — retry next cycle silently
+
+        master_map = {p["symbol"]: p for p in master_positions}
+
+        # Read from our own positions cache — populated by main run loop
+        with self._positions_cache_lock:
+            client_map = dict(self._positions_cache)
+
+        # Safety guard: if master has 0 positions AND client has many,
+        # this is almost certainly a connectivity/startup issue on the master side.
+        # Never close all client positions based on this — skip sync.
+        if len(master_map) == 0 and len(client_map) > 2:
+            self.root.after(0, lambda: self._log_warn(
+                "Sync skipped — master shows 0 positions but client has open trades. "
+                "Check master connection."
+            ))
+            return
+
+        # ── Case 1: Master has it, client doesn't → open on client ───────────
+        for sym, mp in master_map.items():
+            if sym in client_map:
+                continue  # already have it
+            if sym in self._sync_done_open:
+                continue  # already submitted this session — don't repeat
+            qty = self._calc_quantity(mp["quantity"])
+            if qty <= 0:
+                continue
+            action   = mp["side"]
+            currency = mp.get("currency", "USD")
+            if self._trade_mode.get() == "long_only" and action == "SELL":
+                continue
+            try:
+                contract  = Stock(symbol=sym, exchange="SMART", currency=currency)
+                order     = MarketOrder(action, qty)
+                order.tif = "DAY"
+                self.ib.placeOrder(contract, order)
+                self._sync_done_open.add(sym)   # never retry this symbol
+                self.root.after(0, lambda s=sym, a=action, q=qty:
+                    self._log_warn(f"Sync: opening missed position — {a} {s} qty={q}"))
+                time.sleep(0.3)
+            except Exception as e:
+                self.root.after(0, lambda s=sym, e=e:
+                    self._log_err(f"Sync open failed {s}: {e}"))
+
+        # ── Case 2: Client has it, master doesn't → close on client ──────────
+        for sym, cdata in client_map.items():
+            if sym in master_map:
+                continue  # master still holds it
+            if sym in self._sync_done_close:
+                continue  # already submitted this session — don't repeat
+            qty     = float(cdata["position"])
+            abs_qty = int(abs(qty))
+            if abs_qty == 0:
+                continue
+            action   = "SELL" if qty > 0 else "BUY"
+            contract = cdata["contract"]
+            currency = contract.currency or "USD"
+            try:
+                c       = Stock(symbol=sym, exchange="SMART", currency=currency)
+                c.conId = contract.conId
+                order   = MarketOrder(action, abs_qty)
+                order.tif = "DAY"
+                self.ib.placeOrder(c, order)
+                self._sync_done_close.add(sym)
+                self.root.after(0, lambda s=sym, a=action, q=abs_qty:
+                    self._log_warn(f"Sync: closing orphan position — {a} {s} qty={q}"))
+                time.sleep(0.3)
+            except Exception as e:
+                self.root.after(0, lambda s=sym, e=e:
+                    self._log_err(f"Sync close failed {s}: {e}"))
+
+    # ── start / stop ──────────────────────────────────────────────────────────
     def _toggle(self):
         if not self.running: self._start()
         else: self._stop_engine()
@@ -546,93 +604,120 @@ class PaxAmericanaClient:
         cid  = 20
         self._btn.config(text="■   STOP", bg=RED, activebackground="#cc2244", fg="#0a1220")
         self._log_info(f"Connecting to TWS  {host}:{port}  clientId={cid} …")
-        self._drawdown_hit = False
+        self._drawdown_hit         = False
+        self._last_sync_time       = 0.0
+        self._sync_done_close      = set()
+        self._sync_done_open       = set()
+        with self._positions_cache_lock:
+            self._positions_cache.clear()
+        self._close_all_done = set()
         threading.Thread(target=self._run, args=(host, port, cid), daemon=True).start()
 
     def _stop_engine(self):
         self._stop.set()
         self.running = False
+        self._last_idx_needs_reset = True
         self._btn.config(text="▶   START", bg=TEAL, activebackground="#00e8c0", fg="#0a1220")
         self.root.after(0, lambda: self._set_status(False))
         self._log_warn("Engine stopped.")
         try: self.ib.disconnect()
         except: pass
-        self.ib = IB()  # fresh instance for reconnect
+        self.ib = IB()
 
-    # ── main loop ──────────────────────────────────────────────────────────────
+    # ── main loop ─────────────────────────────────────────────────────────────
     def _run(self, host, port, cid):
         import asyncio
         asyncio.set_event_loop(asyncio.new_event_loop())
         self._stop.clear()
+
         try:
             self.ib.connect(host, port, clientId=cid)
             self.running = True
             self.root.after(0, lambda: self._set_status(True))
             self._log_info("TWS connected ✓")
             self._fetch_client_balance()
-        except Exception as e:
+        except Exception:
             self.root.after(0, lambda: self._log_err(
-                "Connection failed. Make sure TWS is running and API access is enabled."
-            ))
+                "Connection failed. Make sure TWS is running and API is enabled."))
             self.root.after(0, lambda: self._btn.config(text="▶   START", bg=TEAL, fg="#0a1220"))
             return
 
-        # Get master balance (used for sizing; not shown in UI)
         base_url = MASTER_URL.rstrip("/")
+
+        # fetch master balance
         try:
             resp = requests.get(f"{base_url}/balance", timeout=4).json()
             self._master_balance = float(resp.get("master_balance", 0))
-        except Exception as e:
+        except Exception:
             pass
 
-        # Snapshot existing orders if new-only mode (quiet; not shown in UI)
-        if self._mode.get() == "new":
+        # determine starting order index
+        # We ALWAYS start from the latest index regardless of mode.
+        # Existing positions are handled by the position sync (every 15s),
+        # which compares master vs client positions and only acts on mismatches.
+        # This prevents double-placing orders that are already in the account.
+        if getattr(self, "_last_idx_needs_reset", True):
             try:
                 resp = requests.get(f"{base_url}/orders", timeout=4).json()
                 self._last_idx = resp.get("total", 0)
-            except: pass
+            except Exception:
+                pass
+            self._last_idx_needs_reset = False
+
+        # If "Existing + New Trades" mode — run an immediate position sync
+        # so any missed positions are opened right away on connect
+        if self._mode.get() == "all":
+            self.root.after(0, lambda: self._log_info("Existing + New mode — running position sync…"))
+            threading.Thread(target=self._sync_positions, daemon=True).start()
+            self._last_sync_time = time.time()
 
         while not self._stop.is_set():
-            # ── drawdown check ────────────────────────────────────────────────
+
+            # ── drawdown guard ────────────────────────────────────────────────
             if self._drawdown_hit:
                 time.sleep(2)
                 continue
 
             current_bal = self._get_client_balance()
             if current_bal > 0 and self._start_balance > 0:
-                drawdown_pct = (self._start_balance - current_bal) / self._start_balance * 100
-                max_dd = self._max_drawdown.get()
-                if drawdown_pct >= max_dd:
+                dd = (self._start_balance - current_bal) / self._start_balance * 100
+                if dd >= self._max_drawdown.get():
                     self._drawdown_hit = True
                     self.root.after(0, lambda: self._log_err(
-                        "Max drawdown limit hit — copying stopped."
-                    ))
+                        "Max drawdown limit hit — trading stopped."))
                     self.root.after(0, lambda: self._set_status(False))
                     time.sleep(2)
                     continue
+
+            # ── refresh positions cache (used by sync + close all) ────────────
+            self._refresh_positions_cache()
 
             # ── poll new orders ───────────────────────────────────────────────
             try:
                 resp = requests.get(
                     f"{base_url}/orders?since={self._last_idx}", timeout=4).json()
                 new_orders = resp.get("orders", [])
-                master_bal = float(resp.get("master_balance", 0))
-                if master_bal > 0:
-                    self._master_balance = master_bal
-
+                mb = float(resp.get("master_balance", 0))
+                if mb > 0:
+                    self._master_balance = mb
                 for o in new_orders:
                     self._maybe_place(o)
                     self._last_idx += 1
-            except Exception as e:
+            except Exception:
                 now = time.time()
                 if now - self._last_poll_warn > 30:
                     self._last_poll_warn = now
                     self.root.after(0, lambda: self._log_warn("Connection issue — retrying…"))
 
+            # ── position sync every SYNC_INTERVAL_SEC ────────────────────────
+            now = time.time()
+            if now - self._last_sync_time >= SYNC_INTERVAL_SEC:
+                self._last_sync_time = now
+                threading.Thread(target=self._sync_positions, daemon=True).start()
+
             time.sleep(2)
 
     def _fetch_client_balance(self):
-        """Fetch client balance and set as start balance."""
         try:
             for v in self.ib.accountValues():
                 if v.tag == "NetLiquidation" and v.currency == "USD":
@@ -641,11 +726,11 @@ class PaxAmericanaClient:
                     self.root.after(0, lambda b=bal: self._bal_lbl.config(
                         text=f"Net Liquidation:  ${b:,.2f}", fg=TEXT))
                     return bal
-        except: pass
+        except Exception:
+            pass
         return 0.0
 
     def _get_client_balance(self):
-        """Get current client balance for drawdown check."""
         try:
             for v in self.ib.accountValues():
                 if v.tag == "NetLiquidation" and v.currency == "USD":
@@ -653,66 +738,41 @@ class PaxAmericanaClient:
                     self.root.after(0, lambda b=bal: self._bal_lbl.config(
                         text=f"Net Liquidation:  ${b:,.2f}", fg=TEXT))
                     return bal
-        except: pass
+        except Exception:
+            pass
         return 0.0
 
-    # ── order placement with proportional sizing ───────────────────────────────
+    # ── order placement ───────────────────────────────────────────────────────
     def _maybe_place(self, o):
-        # Skip SELL in Long Only mode
-        if self._trade_mode.get() == "long_only" and o["action"] == "SELL":
-            self.root.after(0, lambda: self._log_warn(
-                f"Skipped SELL {o['symbol']} (Long Only mode)"))
+        if not self.running:
             return
-
-        # Calculate proportional quantity
+        if self._trade_mode.get() == "long_only" and o["action"] == "SELL":
+            self.root.after(0, lambda: self._log_warn(f"Skipped SELL {o['symbol']} (Long Only mode)"))
+            return
         qty = self._calc_quantity(float(o["quantity"]))
         if qty <= 0:
-            self.root.after(0, lambda: self._log_warn(
-                f"Skipped {o['symbol']} — calculated qty is 0"))
+            self.root.after(0, lambda: self._log_warn(f"Skipped {o['symbol']} — qty is 0"))
             return
-
         self.root.after(0, lambda: self._inc("received"))
         try:
-            contract = Stock(o["symbol"], o["exchange"], o["currency"])
-            self.ib.qualifyContracts(contract)
-
-            if o["orderType"] == "MKT":
-                order = MarketOrder(o["action"], qty)
-            else:
-                order = LimitOrder(o["action"], qty, o["price"])
-            order.tif = "DAY"
-
+            contract     = Stock(o["symbol"], "SMART", o["currency"])
+            order        = MarketOrder(o["action"], qty) if o["orderType"] == "MKT" \
+                           else LimitOrder(o["action"], qty, o["price"])
+            order.tif    = "DAY"
             self.ib.placeOrder(contract, order)
-            self.ib.sleep(0.5)
-
+            time.sleep(0.5)
             self.root.after(0, lambda: self._inc("placed"))
             self.root.after(0, lambda oo=o, q=qty: self._log_order(oo, q))
-        except Exception as e:
+        except Exception:
             self.root.after(0, lambda: self._inc("failed"))
             self.root.after(0, lambda: self._log_err("Order failed. Check TWS for details."))
 
     def _calc_quantity(self, master_qty):
-        """
-        Proportional sizing:
-        client_qty = master_qty × (client_balance / master_balance) × multiplier
-
-        Example:
-          master = $25,000 | client = $100,000 | multiplier = 1.0
-          ratio  = 100,000 / 25,000 = 4.0
-          client_qty = master_qty × 4.0 × 1.0
-        """
         multiplier = self._multiplier.get()
-
-        # If we don't have balances, just use multiplier alone
         if self._master_balance <= 0 or self._start_balance <= 0:
-            qty = round(master_qty * multiplier)
-            return max(1, qty)
-
-        ratio     = self._start_balance / self._master_balance
-        qty       = master_qty * ratio * multiplier
-        qty_round = max(1, round(qty))
-
-        return qty_round
+            return max(1, round(master_qty * multiplier))
+        ratio = self._start_balance / self._master_balance
+        return max(1, round(master_qty * ratio * multiplier))
 
 
 if __name__ == "__main__":
