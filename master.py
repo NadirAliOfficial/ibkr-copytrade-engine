@@ -3,12 +3,17 @@ from flask import Flask, request, jsonify
 import threading
 import uuid
 import time
+import os
 
 # ── config ────────────────────────────────────────────────────────────────────
 TWS_HOST   = "127.0.0.1"
 TWS_PORT   = 7497         # 7496 = Live TWS | 7497 = Paper TWS
 TWS_CLIENT = 0             # clientId=0 sees ALL manual orders placed in TWS
 FLASK_PORT = 5001
+MAX_ORDERS = 500           # keep only the most recent N orders in memory
+# Set API_KEY env var to protect all endpoints with X-API-Key header auth.
+# Leave empty to disable (not recommended when master is on a public IP).
+API_KEY    = os.environ.get("API_KEY", "").strip()
 
 # ── shared state ──────────────────────────────────────────────────────────────
 orders           = []
@@ -21,8 +26,16 @@ lock             = threading.Lock()
 # ── Flask app ─────────────────────────────────────────────────────────────────
 app = Flask(__name__)
 
+def _auth_ok():
+    """Returns True if auth passes. When API_KEY is unset, always passes."""
+    if not API_KEY:
+        return True
+    return request.headers.get("X-API-Key", "") == API_KEY
+
 @app.route("/orders", methods=["GET"])
 def get_orders():
+    if not _auth_ok():
+        return jsonify({"error": "unauthorized"}), 401
     since = request.args.get("since", 0, type=int)
     with lock:
         return jsonify({
@@ -33,6 +46,8 @@ def get_orders():
 
 @app.route("/balance", methods=["GET"])
 def get_balance():
+    if not _auth_ok():
+        return jsonify({"error": "unauthorized"}), 401
     return jsonify({"master_balance": master_balance})
 
 @app.route("/positions", methods=["GET"])
@@ -41,6 +56,8 @@ def get_positions():
     Serves the positions_cache snapshot — updated every 30s by the IB background loop.
     Never calls IB directly (avoids asyncio event loop errors in Waitress threads).
     """
+    if not _auth_ok():
+        return jsonify({"error": "unauthorized"}), 401
     global _ib_instance
     if _ib_instance is None or not _ib_instance.isConnected():
         return jsonify({"positions": [], "error": "not_connected"})
@@ -49,6 +66,8 @@ def get_positions():
 
 @app.route("/clear", methods=["POST"])
 def clear_orders():
+    if not _auth_ok():
+        return jsonify({"error": "unauthorized"}), 401
     with lock:
         orders.clear()
         sent_keys.clear()
@@ -57,6 +76,8 @@ def clear_orders():
 
 @app.route("/status", methods=["GET"])
 def status():
+    if not _auth_ok():
+        return jsonify({"error": "unauthorized"}), 401
     return jsonify({
         "status":         "running",
         "total_orders":   len(orders),
@@ -130,6 +151,8 @@ def capture(trade):
             "price":     float(o.lmtPrice) if o.lmtPrice else 0.0,
         }
         orders.append(order_data)
+        if len(orders) > MAX_ORDERS:
+            del orders[:-MAX_ORDERS]
     print(f"✅  Captured [{len(orders)-1}]: {o.action} {c.symbol} "
           f"qty={float(o.totalQuantity)} @ {o.lmtPrice} ({o.orderType})")
 
@@ -171,6 +194,10 @@ def update_positions_cache(ib):
 
 def balance_loop(ib):
     while True:
+        if not ib.isConnected():
+            print("⚠️  balance_loop: IB disconnected — waiting for reconnect...")
+            time.sleep(5)
+            continue
         update_balance(ib)
         update_positions_cache(ib)
         time.sleep(30)
@@ -191,9 +218,8 @@ def connect_tws():
     t = threading.Thread(target=balance_loop, args=(ib,), daemon=True)
     t.start()
 
-    ib.newOrderEvent    += capture
-    ib.orderStatusEvent += capture
-    ib.openOrderEvent   += capture
+    ib.newOrderEvent  += capture
+    ib.openOrderEvent += capture
 
     ib.reqOpenOrders()
     ib.sleep(1)

@@ -39,7 +39,14 @@ def _trim_transparent(img: Image.Image) -> Image.Image:
 
 # ── config ────────────────────────────────────────────────────────────────────
 MASTER_URL        = "http://170.39.187.228:5001"
+MASTER_API_KEY    = ""    # set to match API_KEY env var on master (leave empty if auth disabled)
 SYNC_INTERVAL_SEC = 15   # position sync check every 15 seconds
+
+def _api_headers():
+    """Returns headers dict with X-API-Key when configured."""
+    if MASTER_API_KEY:
+        return {"X-API-Key": MASTER_API_KEY}
+    return {}
 
 # ── theme ─────────────────────────────────────────────────────────────────────
 BG     = "#0d1526"
@@ -82,12 +89,14 @@ class PaxAmericanaClient:
         self._master_balance       = 0.0
         self._drawdown_hit         = False
         self._last_poll_warn       = 0.0
+        self._last_balance_refresh = 0.0   # tracks periodic client balance refresh
         self._last_idx_needs_reset = True
         self._last_sync_time       = 0.0
         self._sync_done_close      = set()
         self._sync_done_open       = set()
         self._positions_cache      = {}      # symbol -> {position, contract} — updated by background thread
         self._positions_cache_lock = threading.Lock()
+        self._ib_lock              = threading.Lock()   # serialises concurrent ib.placeOrder calls
         self._close_all_done       = set()   # symbols already submitted via Close All this session
         self._close_all_running    = False   # prevent concurrent Close All threads
 
@@ -459,7 +468,8 @@ class PaxAmericanaClient:
                     order     = MarketOrder(action, abs_qty)
                     order.tif = "DAY"
 
-                    self.ib.placeOrder(c, order)
+                    with self._ib_lock:
+                        self.ib.placeOrder(c, order)
                     self._close_all_done.add(sym)  # never re-submit this symbol
                     closed += 1
                     self.root.after(0, lambda s=sym, a=action, q=abs_qty:
@@ -471,6 +481,9 @@ class PaxAmericanaClient:
                         self._log_err(f"Close all failed {s}: {e}"))
 
             self.root.after(0, lambda c=closed: self._log_ok(f"Done — submitted {c} closing orders."))
+            self.root.after(0, lambda: self._log_warn(
+                "Close All: new positions opened after this point won't be auto-closed. "
+                "Press STOP then START to reset."))
 
         except Exception as e:
             self.root.after(0, lambda e=e: self._log_err(f"Close all error: {e}"))
@@ -552,7 +565,7 @@ class PaxAmericanaClient:
         # Fetch master positions
         try:
             base_url = MASTER_URL.rstrip("/")
-            resp = requests.get(f"{base_url}/positions", timeout=6).json()
+            resp = requests.get(f"{base_url}/positions", timeout=6, headers=_api_headers()).json()
             master_positions = resp.get("positions", [])
             # Safety guard: if master returns an error or empty list, it may not be
             # properly connected. Never close client positions based on an empty response —
@@ -598,7 +611,8 @@ class PaxAmericanaClient:
                 contract  = Stock(symbol=sym, exchange="SMART", currency=currency)
                 order     = MarketOrder(action, qty)
                 order.tif = "DAY"
-                self.ib.placeOrder(contract, order)
+                with self._ib_lock:
+                    self.ib.placeOrder(contract, order)
                 self._sync_done_open.add(sym)
                 self.root.after(0, lambda s=sym, a=action, q=qty:
                     self._log_warn(f"Sync: opening missed position — {a} {s} qty={q}"))
@@ -608,12 +622,16 @@ class PaxAmericanaClient:
                     self._log_err(f"Sync open failed {s}: {e}"))
 
         # ── Case 2: Client has it, master doesn't → close on client ──────────
+        # WARNING: this will also close any positions the client opened manually
+        # that the master does not hold. STOP the engine to protect manual trades.
         for sym, cdata in client_map.items():
             if sym in master_map:
                 self._sync_done_close.discard(sym)  # master has it again — reset
                 continue
             if sym in self._sync_done_close:
                 continue  # already submitted this session — don't repeat
+            self.root.after(0, lambda s=sym: self._log_warn(
+                f"Sync: {s} not in master — closing. Stop engine to keep manual positions."))
             qty     = float(cdata["position"])
             abs_qty = int(abs(qty))
             if abs_qty == 0:
@@ -626,7 +644,8 @@ class PaxAmericanaClient:
                 c.conId = contract.conId
                 order   = MarketOrder(action, abs_qty)
                 order.tif = "DAY"
-                self.ib.placeOrder(c, order)
+                with self._ib_lock:
+                    self.ib.placeOrder(c, order)
                 self._sync_done_close.add(sym)
                 self.root.after(0, lambda s=sym, a=action, q=abs_qty:
                     self._log_warn(f"Sync: closing orphan position — {a} {s} qty={q}"))
@@ -641,9 +660,13 @@ class PaxAmericanaClient:
         else: self._stop_engine()
 
     def _start(self):
+        import hashlib, socket
         host = "127.0.0.1"
         port = 7496 if self._account_mode.get() == "live" else 7497
-        cid  = 20
+        # Derive a stable clientId (21-999) from the hostname so two machines
+        # don't collide, while staying well clear of clientId=0 used by master.
+        _hash = int(hashlib.md5(socket.gethostname().encode()).hexdigest(), 16)
+        cid   = 21 + (_hash % 978)
         self._btn.config(text="■   STOP", bg=RED, activebackground="#cc2244", fg="#0a1220")
         self._log_info(f"Connecting to TWS  {host}:{port}  clientId={cid} …")
         self._drawdown_hit         = False
@@ -689,7 +712,7 @@ class PaxAmericanaClient:
 
         # fetch master balance
         try:
-            resp = requests.get(f"{base_url}/balance", timeout=4).json()
+            resp = requests.get(f"{base_url}/balance", timeout=4, headers=_api_headers()).json()
             self._master_balance = float(resp.get("master_balance", 0))
         except Exception:
             pass
@@ -701,7 +724,7 @@ class PaxAmericanaClient:
         # This prevents double-placing orders that are already in the account.
         if getattr(self, "_last_idx_needs_reset", True):
             try:
-                resp = requests.get(f"{base_url}/orders", timeout=4).json()
+                resp = requests.get(f"{base_url}/orders", timeout=4, headers=_api_headers()).json()
                 self._last_idx = resp.get("total", 0)
             except Exception:
                 pass
@@ -737,13 +760,22 @@ class PaxAmericanaClient:
                     time.sleep(2)
                     continue
 
+            # ── refresh client balance every 60s (keeps sizing ratio accurate) ─
+            _now = time.time()
+            if _now - self._last_balance_refresh >= 60:
+                refreshed = self._get_client_balance()
+                if refreshed > 0:
+                    self._start_balance = refreshed
+                self._last_balance_refresh = _now
+
             # ── refresh positions cache (used by sync + close all) ────────────
             self._refresh_positions_cache()
 
             # ── poll new orders ───────────────────────────────────────────────
             try:
                 resp = requests.get(
-                    f"{base_url}/orders?since={self._last_idx}", timeout=4).json()
+                    f"{base_url}/orders?since={self._last_idx}", timeout=4,
+                    headers=_api_headers()).json()
                 new_orders = resp.get("orders", [])
                 mb = float(resp.get("master_balance", 0))
                 if mb > 0:
@@ -796,6 +828,26 @@ class PaxAmericanaClient:
     def _maybe_place(self, o):
         if not self.running:
             return
+        required = ("symbol", "action", "orderType", "quantity", "currency")
+        missing  = [k for k in required if not o.get(k)]
+        if missing:
+            self.root.after(0, lambda m=missing: self._log_err(
+                f"Malformed order from master — missing fields: {m}"))
+            return
+        if o["action"] not in ("BUY", "SELL"):
+            self.root.after(0, lambda: self._log_err(
+                f"Invalid action '{o['action']}' in order — skipped"))
+            return
+        if o["orderType"] not in ("MKT", "LMT"):
+            self.root.after(0, lambda: self._log_err(
+                f"Unsupported orderType '{o['orderType']}' — skipped"))
+            return
+        try:
+            float(o["quantity"])
+        except (ValueError, TypeError):
+            self.root.after(0, lambda: self._log_err(
+                f"Invalid quantity '{o['quantity']}' — skipped"))
+            return
         if self._trade_mode.get() == "long_only" and o["action"] == "SELL":
             self.root.after(0, lambda: self._log_warn(f"Skipped SELL {o['symbol']} (Long Only mode)"))
             return
@@ -809,7 +861,8 @@ class PaxAmericanaClient:
             order        = MarketOrder(o["action"], qty) if o["orderType"] == "MKT" \
                            else LimitOrder(o["action"], qty, o["price"])
             order.tif    = "DAY"
-            self.ib.placeOrder(contract, order)
+            with self._ib_lock:
+                self.ib.placeOrder(contract, order)
             # Prevent sync from also opening/closing this symbol in the same session
             self._sync_done_open.add(o["symbol"])
             self._sync_done_close.add(o["symbol"])
@@ -823,7 +876,11 @@ class PaxAmericanaClient:
     def _calc_quantity(self, master_qty):
         multiplier = self._multiplier.get()
         if self._master_balance <= 0 or self._start_balance <= 0:
-            return max(1, round(master_qty * multiplier))
+            # Balances not yet loaded — return 0 so the order is skipped.
+            # Placing at full master size when account sizes are unknown is unsafe.
+            self.root.after(0, lambda: self._log_warn(
+                "Order skipped — balance not yet loaded. Retry after balances appear."))
+            return 0
         ratio = self._start_balance / self._master_balance
         return max(1, round(master_qty * ratio * multiplier))
 

@@ -1,8 +1,7 @@
 ib_insync
 requests
-pillow 
+pillow
 flask
+waitress
 python-dotenv
 tzdata
-
-MASTER_URL = "http://170.39.187.228:5001" 
