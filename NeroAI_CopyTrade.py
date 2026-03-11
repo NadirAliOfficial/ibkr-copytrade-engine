@@ -5,7 +5,7 @@ import sys
 import threading, requests, time, io, base64
 from datetime import datetime
 from PIL import Image, ImageTk
-from ib_insync import IB, Stock, MarketOrder, LimitOrder
+from ib_insync import IB, Stock, MarketOrder, LimitOrder, StopOrder, StopLimitOrder
 
 def _resource_path(rel_path: str) -> str:
     base = getattr(sys, "_MEIPASS", os.path.abspath(os.path.dirname(__file__)))
@@ -38,7 +38,8 @@ def _trim_transparent(img: Image.Image) -> Image.Image:
     return rgba.crop(bbox) if bbox else rgba
 
 # ── config ────────────────────────────────────────────────────────────────────
-MASTER_URL        = "http://170.39.187.228:5001"
+MASTER_URL        = "http://170.39.187.228:5001" # Test
+MASTER_URL        = "http://148.113.203.188:5001" # Real
 MASTER_API_KEY    = ""    # set to match API_KEY env var on master (leave empty if auth disabled)
 SYNC_INTERVAL_SEC = 15   # position sync check every 15 seconds
 
@@ -495,7 +496,10 @@ class PaxAmericanaClient:
         """
         Refreshes _positions_cache from ib.portfolio() (incremental updates).
         Called every 2s from the main run loop.
+        Only updates the cache if TWS is connected — never clears on disconnection.
         """
+        if not self.ib.isConnected():
+            return
         try:
             snapshot = {}
             for item in self.ib.portfolio():
@@ -506,9 +510,13 @@ class PaxAmericanaClient:
                     "position": qty,
                     "contract": item.contract,
                 }
-            with self._positions_cache_lock:
-                self._positions_cache.clear()
-                self._positions_cache.update(snapshot)
+            # Only overwrite cache if we got a non-empty result, OR we know
+            # the account is genuinely flat (portfolio() returns [] when connected
+            # and no positions exist — safe to clear in that case).
+            if snapshot or self.ib.isConnected():
+                with self._positions_cache_lock:
+                    self._positions_cache.clear()
+                    self._positions_cache.update(snapshot)
         except Exception:
             pass
 
@@ -609,13 +617,23 @@ class PaxAmericanaClient:
                 continue
             try:
                 contract  = Stock(symbol=sym, exchange="SMART", currency=currency)
-                order     = MarketOrder(action, qty)
+                ot        = mp.get("orderType", "MKT")
+                price     = float(mp.get("price", 0) or 0)
+                aux_price = float(mp.get("auxPrice", 0) or 0)
+                if ot == "LMT":
+                    order = LimitOrder(action, qty, price)
+                elif ot == "STP":
+                    order = StopOrder(action, qty, aux_price)
+                elif ot == "STP LMT":
+                    order = StopLimitOrder(action, qty, price, aux_price)
+                else:
+                    order = MarketOrder(action, qty)
                 order.tif = "DAY"
                 with self._ib_lock:
                     self.ib.placeOrder(contract, order)
                 self._sync_done_open.add(sym)
-                self.root.after(0, lambda s=sym, a=action, q=qty:
-                    self._log_warn(f"Sync: opening missed position — {a} {s} qty={q}"))
+                self.root.after(0, lambda s=sym, a=action, q=qty, t=ot:
+                    self._log_warn(f"Sync: opening missed position — {a} {s} qty={q} ({t})"))
                 time.sleep(0.5)  # small gap between orders to avoid TWS rate limit
             except Exception as e:
                 self.root.after(0, lambda s=sym, e=e:
@@ -744,6 +762,34 @@ class PaxAmericanaClient:
 
         while not self._stop.is_set():
 
+            # ── auto-reconnect if TWS dropped ─────────────────────────────────
+            if not self.ib.isConnected():
+                self.running = False
+                self.root.after(0, lambda: self._set_status(False))
+                self.root.after(0, lambda: self._log_warn("TWS disconnected — reconnecting in 10s…"))
+                for _ in range(10):
+                    if self._stop.is_set():
+                        break
+                    time.sleep(1)
+                if self._stop.is_set():
+                    break
+                try:
+                    self.ib.disconnect()
+                except Exception:
+                    pass
+                self.ib = IB()
+                try:
+                    self.ib.connect(host, port, cid)
+                    self.running = True
+                    self.root.after(0, lambda: self._set_status(True))
+                    self.root.after(0, lambda: self._log_ok("TWS reconnected ✓ — resuming…"))
+                    self._fetch_client_balance()
+                    # Force position refresh after reconnect so cache is accurate
+                    self._force_refresh_positions_cache()
+                except Exception:
+                    self.root.after(0, lambda: self._log_warn("Reconnect failed — will retry…"))
+                    continue
+
             # ── drawdown guard ────────────────────────────────────────────────
             if self._drawdown_hit:
                 time.sleep(2)
@@ -781,8 +827,10 @@ class PaxAmericanaClient:
                 if mb > 0:
                     self._master_balance = mb
                 for o in new_orders:
-                    self._maybe_place(o)
-                    self._last_idx += 1
+                    if self._maybe_place(o):
+                        self._last_idx += 1
+                    else:
+                        break  # TWS down — retry this order next cycle
             except Exception:
                 now = time.time()
                 if now - self._last_poll_warn > 30:
@@ -826,40 +874,51 @@ class PaxAmericanaClient:
 
     # ── order placement ───────────────────────────────────────────────────────
     def _maybe_place(self, o):
+        """Returns True if the order was placed or intentionally skipped.
+        Returns False only on a TWS placement failure — caller should not advance _last_idx."""
         if not self.running:
-            return
+            return True
         required = ("symbol", "action", "orderType", "quantity", "currency")
         missing  = [k for k in required if not o.get(k)]
         if missing:
             self.root.after(0, lambda m=missing: self._log_err(
                 f"Malformed order from master — missing fields: {m}"))
-            return
+            return True
         if o["action"] not in ("BUY", "SELL"):
             self.root.after(0, lambda: self._log_err(
                 f"Invalid action '{o['action']}' in order — skipped"))
-            return
-        if o["orderType"] not in ("MKT", "LMT"):
+            return True
+        if o["orderType"] not in ("MKT", "LMT", "STP", "STP LMT"):
             self.root.after(0, lambda: self._log_err(
                 f"Unsupported orderType '{o['orderType']}' — skipped"))
-            return
+            return True
         try:
             float(o["quantity"])
         except (ValueError, TypeError):
             self.root.after(0, lambda: self._log_err(
                 f"Invalid quantity '{o['quantity']}' — skipped"))
-            return
+            return True
         if self._trade_mode.get() == "long_only" and o["action"] == "SELL":
             self.root.after(0, lambda: self._log_warn(f"Skipped SELL {o['symbol']} (Long Only mode)"))
-            return
+            return True
         qty = self._calc_quantity(float(o["quantity"]))
         if qty <= 0:
             self.root.after(0, lambda: self._log_warn(f"Skipped {o['symbol']} — qty is 0"))
-            return
+            return True
         self.root.after(0, lambda: self._inc("received"))
         try:
-            contract     = Stock(o["symbol"], "SMART", o["currency"])
-            order        = MarketOrder(o["action"], qty) if o["orderType"] == "MKT" \
-                           else LimitOrder(o["action"], qty, o["price"])
+            contract  = Stock(o["symbol"], "SMART", o["currency"])
+            ot        = o["orderType"]
+            price     = float(o.get("price", 0) or 0)
+            aux_price = float(o.get("auxPrice", 0) or 0)
+            if ot == "MKT":
+                order = MarketOrder(o["action"], qty)
+            elif ot == "LMT":
+                order = LimitOrder(o["action"], qty, price)
+            elif ot == "STP":
+                order = StopOrder(o["action"], qty, aux_price)
+            else:  # STP LMT
+                order = StopLimitOrder(o["action"], qty, price, aux_price)
             order.tif    = "DAY"
             with self._ib_lock:
                 self.ib.placeOrder(contract, order)
@@ -869,9 +928,11 @@ class PaxAmericanaClient:
             time.sleep(0.5)
             self.root.after(0, lambda: self._inc("placed"))
             self.root.after(0, lambda oo=o, q=qty: self._log_order(oo, q))
+            return True
         except Exception:
             self.root.after(0, lambda: self._inc("failed"))
             self.root.after(0, lambda: self._log_err("Order failed. Check TWS for details."))
+            return False
 
     def _calc_quantity(self, master_qty):
         multiplier = self._multiplier.get()

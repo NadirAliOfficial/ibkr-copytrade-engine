@@ -20,6 +20,7 @@ orders           = []
 sent_keys        = set()
 master_balance   = 0.0
 positions_cache  = []      # refreshed every 30s by background loop — thread-safe snapshot
+symbol_order_info = {}     # symbol -> {orderType, price, auxPrice} from latest captured order
 _ib_instance     = None
 lock             = threading.Lock()
 
@@ -149,10 +150,17 @@ def capture(trade):
             "orderType": o.orderType,
             "quantity":  float(o.totalQuantity),
             "price":     float(o.lmtPrice) if o.lmtPrice else 0.0,
+            "auxPrice":  float(o.auxPrice) if o.auxPrice else 0.0,
         }
         orders.append(order_data)
         if len(orders) > MAX_ORDERS:
             del orders[:-MAX_ORDERS]
+        # Track latest order type per symbol — used to enrich /positions for sync
+        symbol_order_info[c.symbol] = {
+            "orderType": o.orderType,
+            "price":     float(o.lmtPrice) if o.lmtPrice else 0.0,
+            "auxPrice":  float(o.auxPrice) if o.auxPrice else 0.0,
+        }
     print(f"✅  Captured [{len(orders)-1}]: {o.action} {c.symbol} "
           f"qty={float(o.totalQuantity)} @ {o.lmtPrice} ({o.orderType})")
 
@@ -177,12 +185,18 @@ def update_positions_cache(ib):
             qty = float(p.position)
             if qty == 0:
                 continue
+            # Enrich with the latest order type seen for this symbol so the
+            # client sync can replicate the exact order type instead of MKT.
+            info = symbol_order_info.get(p.contract.symbol, {})
             snapshot.append({
-                "symbol":   p.contract.symbol,
-                "currency": p.contract.currency or "USD",
-                "exchange": p.contract.exchange or "SMART",
-                "quantity": abs(qty),
-                "side":     "BUY" if qty > 0 else "SELL",
+                "symbol":    p.contract.symbol,
+                "currency":  p.contract.currency or "USD",
+                "exchange":  p.contract.exchange or "SMART",
+                "quantity":  abs(qty),
+                "side":      "BUY" if qty > 0 else "SELL",
+                "orderType": info.get("orderType", "MKT"),
+                "price":     info.get("price", 0.0),
+                "auxPrice":  info.get("auxPrice", 0.0),
             })
         with lock:
             positions_cache.clear()
