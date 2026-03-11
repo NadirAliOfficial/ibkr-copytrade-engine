@@ -4,6 +4,10 @@ import threading
 import uuid
 import time
 import os
+import logging
+
+# Suppress noisy ib_insync internal error logs — we handle messaging ourselves
+logging.getLogger("ib_insync").setLevel(logging.CRITICAL)
 
 # ── config ────────────────────────────────────────────────────────────────────
 TWS_HOST   = "127.0.0.1"
@@ -266,10 +270,13 @@ if __name__ == "__main__":
     # TWS forces a daily restart (configurable in TWS settings). When it drops,
     # master.py waits RECONNECT_DELAY seconds then reconnects automatically.
     # orders / sent_keys / symbol_order_info are preserved across reconnects.
+    attempt = 0
     while True:
         try:
+            attempt += 1
             connect_tws()
-        except Exception as e:
-            print(f"⚠️  TWS connection error: {e}")
-        print(f"🔄  TWS disconnected — reconnecting in {RECONNECT_DELAY}s…")
+            attempt = 0  # reset on clean disconnect
+        except Exception:
+            pass
+        print(f"⚠️  TWS not available — retrying in {RECONNECT_DELAY}s… (attempt {attempt})")
         time.sleep(RECONNECT_DELAY)
