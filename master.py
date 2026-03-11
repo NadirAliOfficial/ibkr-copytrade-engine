@@ -206,10 +206,14 @@ def update_positions_cache(ib):
         print(f"⚠️  Positions cache update failed: {e}")
 
 
-def balance_loop(ib):
+RECONNECT_DELAY = 30   # seconds to wait between TWS reconnect attempts
+
+def _background_loop():
+    """Single persistent thread — refreshes balance and positions every 30s.
+    Always picks up the latest _ib_instance so reconnects are seamless."""
     while True:
-        if not ib.isConnected():
-            print("⚠️  balance_loop: IB disconnected — waiting for reconnect...")
+        ib = _ib_instance
+        if ib is None or not ib.isConnected():
             time.sleep(5)
             continue
         update_balance(ib)
@@ -218,6 +222,8 @@ def balance_loop(ib):
 
 # ── TWS connection ─────────────────────────────────────────────────────────────
 def connect_tws():
+    """Connect to TWS, register order hooks, and block until disconnected.
+    Called in a retry loop from __main__ — returns when TWS drops."""
     global _ib_instance
     ib = IB()
     _ib_instance = ib
@@ -227,10 +233,7 @@ def connect_tws():
 
     update_balance(ib)
     capture_positions(ib)
-    update_positions_cache(ib)   # populate cache immediately on startup
-
-    t = threading.Thread(target=balance_loop, args=(ib,), daemon=True)
-    t.start()
+    update_positions_cache(ib)
 
     ib.newOrderEvent  += capture
     ib.openOrderEvent += capture
@@ -238,14 +241,8 @@ def connect_tws():
     ib.reqOpenOrders()
     ib.sleep(1)
 
-    print(f"👂  Listening for orders on TWS...")
-    print(f"🌐  Production server running on http://0.0.0.0:{FLASK_PORT}")
-    print(f"     GET  /orders?since=N  — poll new orders")
-    print(f"     GET  /balance         — master balance")
-    print(f"     GET  /positions       — current open positions (for sync)")
-    print(f"     GET  /status          — server status")
-    print(f"     POST /clear           — clear order list")
-    ib.run()
+    print(f"👂  Listening for orders on TWS…")
+    ib.run()   # blocks until TWS disconnects
 
 # ── main ──────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
@@ -255,5 +252,24 @@ if __name__ == "__main__":
         daemon=True
     )
     flask_thread.start()
-    print(f"🚀  Waitress production server started on port {FLASK_PORT}")
-    connect_tws()
+    print(f"🚀  Waitress server started on port {FLASK_PORT}")
+    print(f"     GET  /orders?since=N  — poll new orders")
+    print(f"     GET  /balance         — master balance")
+    print(f"     GET  /positions       — current open positions (for sync)")
+    print(f"     GET  /status          — server status")
+    print(f"     POST /clear           — clear order list")
+
+    # Single persistent background thread — survives reconnects
+    threading.Thread(target=_background_loop, daemon=True).start()
+
+    # ── auto-reconnect loop ────────────────────────────────────────────────────
+    # TWS forces a daily restart (configurable in TWS settings). When it drops,
+    # master.py waits RECONNECT_DELAY seconds then reconnects automatically.
+    # orders / sent_keys / symbol_order_info are preserved across reconnects.
+    while True:
+        try:
+            connect_tws()
+        except Exception as e:
+            print(f"⚠️  TWS connection error: {e}")
+        print(f"🔄  TWS disconnected — reconnecting in {RECONNECT_DELAY}s…")
+        time.sleep(RECONNECT_DELAY)
