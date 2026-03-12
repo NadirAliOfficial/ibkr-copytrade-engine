@@ -252,7 +252,9 @@ def connect_tws():
 if __name__ == "__main__":
     from waitress import serve
     flask_thread = threading.Thread(
-        target=lambda: serve(app, host="0.0.0.0", port=FLASK_PORT),
+        target=lambda: serve(app, host="0.0.0.0", port=FLASK_PORT,
+                             threads=32, connection_limit=10000,
+                             channel_timeout=30),
         daemon=True
     )
     flask_thread.start()
@@ -274,6 +276,13 @@ if __name__ == "__main__":
     while True:
         try:
             attempt += 1
+            # Cleanly disconnect old instance before reconnecting to avoid
+            # duplicate clientId errors on TWS side
+            if _ib_instance is not None:
+                try:
+                    _ib_instance.disconnect()
+                except Exception:
+                    pass
             connect_tws()
             attempt = 0  # reset on clean disconnect
         except Exception:
