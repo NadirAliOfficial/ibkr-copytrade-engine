@@ -510,10 +510,12 @@ class PaxAmericanaClient:
                     "position": qty,
                     "contract": item.contract,
                 }
-            # Only overwrite cache if we got a non-empty result, OR we know
-            # the account is genuinely flat (portfolio() returns [] when connected
-            # and no positions exist — safe to clear in that case).
-            if snapshot or self.ib.isConnected():
+            # Only overwrite cache if snapshot is non-empty.
+            # ib.portfolio() can return [] briefly after reconnect while TWS
+            # re-streams data — never clear real positions based on that.
+            # _force_refresh_positions_cache (reqPositions) is the authoritative
+            # source for a flat account and runs every sync cycle.
+            if snapshot:
                 with self._positions_cache_lock:
                     self._positions_cache.clear()
                     self._positions_cache.update(snapshot)
@@ -658,12 +660,15 @@ class PaxAmericanaClient:
             contract = cdata["contract"]
             currency = contract.currency or "USD"
             try:
-                c       = Stock(symbol=sym, exchange="SMART", currency=currency)
-                c.conId = contract.conId
-                order   = MarketOrder(action, abs_qty)
+                # Don't use cached conId — can be stale after reconnect and
+                # cause silent order failures. Let TWS resolve by symbol.
+                c         = Stock(symbol=sym, exchange="SMART", currency=currency)
+                order     = MarketOrder(action, abs_qty)
                 order.tif = "DAY"
                 with self._ib_lock:
                     self.ib.placeOrder(c, order)
+                # Only mark as done AFTER successful placement — if it throws,
+                # we retry next cycle instead of leaving the orphan forever.
                 self._sync_done_close.add(sym)
                 self.root.after(0, lambda s=sym, a=action, q=abs_qty:
                     self._log_warn(f"Sync: closing orphan position — {a} {s} qty={q}"))
