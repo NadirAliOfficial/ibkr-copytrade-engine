@@ -2,10 +2,71 @@ import tkinter as tk
 from tkinter import scrolledtext, messagebox
 import os
 import sys
+import subprocess
 import threading, requests, time, io, base64
 from datetime import datetime
 from PIL import Image, ImageTk
 from ib_insync import IB, Stock, MarketOrder, LimitOrder, StopOrder, StopLimitOrder
+
+# ── auto-updater ───────────────────────────────────────────────────────────────
+APP_VERSION  = "1.0.0"
+_VERSION_URL = "https://raw.githubusercontent.com/NadirAliOfficial/ibkr-copytrade-engine/main/version.txt"
+_DOWNLOAD_URL = "https://github.com/NadirAliOfficial/ibkr-copytrade-engine/releases/latest/download/Pax_Americana.exe"
+
+def _version_tuple(v):
+    try:
+        return tuple(int(x) for x in v.strip().split("."))
+    except Exception:
+        return (0,)
+
+def _check_and_apply_update():
+    """Check GitHub for a newer version and self-update if found.
+    Only runs when packaged as exe. Never blocks startup on any failure."""
+    if not getattr(sys, "frozen", False):
+        return  # running as .py script — skip
+    try:
+        latest = requests.get(_VERSION_URL, timeout=5).text.strip()
+        if _version_tuple(latest) <= _version_tuple(APP_VERSION):
+            return  # already up to date
+
+        # Notify user
+        _r = tk.Tk()
+        _r.withdraw()
+        messagebox.showinfo(
+            "Update Available",
+            f"A new version is available ({APP_VERSION} → {latest}).\n"
+            "Downloading now — the app will restart automatically."
+        )
+        _r.destroy()
+
+        # Download new exe
+        exe_path = sys.executable
+        new_path = exe_path + ".new"
+        resp = requests.get(_DOWNLOAD_URL, timeout=120, stream=True)
+        resp.raise_for_status()
+        with open(new_path, "wb") as f:
+            for chunk in resp.iter_content(chunk_size=65536):
+                f.write(chunk)
+
+        # Write a small batch script that:
+        # 1. Waits for this process to exit
+        # 2. Replaces the old exe with the new one
+        # 3. Relaunches the app
+        # 4. Deletes itself
+        bat = os.path.join(os.path.dirname(exe_path), "_pax_update.bat")
+        with open(bat, "w") as f:
+            f.write("@echo off\n")
+            f.write("ping 127.0.0.1 -n 3 >nul\n")          # wait ~2s for process to exit
+            f.write(f'move /y "{new_path}" "{exe_path}"\n') # replace exe
+            f.write(f'start "" "{exe_path}"\n')             # relaunch
+            f.write('del "%~f0"\n')                         # self-delete bat
+
+        subprocess.Popen(bat, shell=True,
+                         creationflags=subprocess.CREATE_NO_WINDOW)
+        sys.exit(0)
+
+    except Exception:
+        pass  # never block startup due to update failure
 
 def _resource_path(rel_path: str) -> str:
     base = getattr(sys, "_MEIPASS", os.path.abspath(os.path.dirname(__file__)))
@@ -38,7 +99,7 @@ def _trim_transparent(img: Image.Image) -> Image.Image:
     return rgba.crop(bbox) if bbox else rgba
 
 # ── config ────────────────────────────────────────────────────────────────────
-MASTER_URL        = "http://170.39.187.228:5001" # Test
+# MASTER_URL        = "http://170.39.187.228:5001" # Test
 MASTER_URL        = "http://148.113.203.188:5001" # Real
 MASTER_API_KEY    = ""    # set to match API_KEY env var on master (leave empty if auth disabled)
 SYNC_INTERVAL_SEC = 15   # position sync check every 15 seconds
@@ -952,6 +1013,7 @@ class PaxAmericanaClient:
 
 
 if __name__ == "__main__":
+    _check_and_apply_update()
     root = tk.Tk()
     PaxAmericanaClient(root)
     root.mainloop()
