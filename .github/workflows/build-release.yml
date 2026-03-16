@@ -1,0 +1,44 @@
+name: Build & Release
+
+on:
+  push:
+    paths:
+      - 'version.txt'   # trigger only when version.txt is updated
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install pyinstaller
+          pip install -r requirements.txt
+
+      - name: Read version
+        id: version
+        run: |
+          $version = (Get-Content version.txt).Trim()
+          echo "VERSION=$version" >> $env:GITHUB_OUTPUT
+        shell: pwsh
+
+      - name: Build exe
+        run: pyinstaller build_neroai.spec
+
+      - name: Create GitHub Release & upload exe
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.version.outputs.VERSION }}
+          name: Pax Americana v${{ steps.version.outputs.VERSION }}
+          files: dist/Pax_Americana.exe
+          generate_release_notes: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
