@@ -103,6 +103,8 @@ def _trim_transparent(img: Image.Image) -> Image.Image:
 MASTER_URL        = "http://148.113.203.188:5001" # Real
 MASTER_API_KEY    = ""    # set to match API_KEY env var on master (leave empty if auth disabled)
 SYNC_INTERVAL_SEC = 15   # position sync check every 15 seconds
+LICENSE_URL       = "https://portal.nerotrades.com/api/licenses/equities"
+LICENSE_CHECK_SEC = 60   # re-check license every 60 seconds
 
 def _api_headers():
     """Returns headers dict with X-API-Key when configured."""
@@ -738,6 +740,23 @@ class PaxAmericanaClient:
                 self.root.after(0, lambda s=sym, e=e:
                     self._log_err(f"Sync close failed {s}: {e}"))
 
+    # ── license verification ─────────────────────────────────────────────────
+    def _check_license(self, account: str) -> bool:
+        """Return True if *account* appears in the license endpoint."""
+        try:
+            resp = requests.get(LICENSE_URL, timeout=6)
+            resp.raise_for_status()
+            data = resp.json()
+            licenses = data.get("licenses", []) if isinstance(data, dict) else data
+            for entry in licenses:
+                val = entry if isinstance(entry, str) else str(entry.get("key", ""))
+                if val == account:
+                    return True
+            return False
+        except Exception as e:
+            self._log_warn(f"License check failed: {e}")
+            return False
+
     # ── start / stop ──────────────────────────────────────────────────────────
     def _toggle(self):
         if not self.running: self._start()
@@ -781,6 +800,33 @@ class PaxAmericanaClient:
 
         try:
             self.ib.connect(host, port, clientId=cid)
+
+            # ── license gate ──────────────────────────────────────────
+            accts = self.ib.managedAccounts()
+            self._tws_account = accts[0] if accts else ""
+            if not self._tws_account:
+                self.root.after(0, lambda: self._log_err(
+                    "Could not retrieve TWS account number."))
+                self.root.after(0, lambda: self._btn.config(
+                    text="▶   START", bg=TEAL, fg="#0a1220"))
+                try: self.ib.disconnect()
+                except: pass
+                return
+            self.root.after(0, lambda a=self._tws_account:
+                self._log_info(f"TWS account: {a}"))
+            if not self._check_license(self._tws_account):
+                self.root.after(0, lambda: self._log_err(
+                    "License not found — this account is not authorized. "
+                    "Contact support@nerotrades.com"))
+                self.root.after(0, lambda: self._btn.config(
+                    text="▶   START", bg=TEAL, fg="#0a1220"))
+                try: self.ib.disconnect()
+                except: pass
+                return
+            self.root.after(0, lambda: self._log_ok("License verified ✓"))
+            self._last_license_check = time.time()
+            # ──────────────────────────────────────────────────────────
+
             self.running = True
             self.root.after(0, lambda: self._set_status(True))
             self._log_info("TWS connected ✓")
@@ -872,8 +918,17 @@ class PaxAmericanaClient:
                     time.sleep(2)
                     continue
 
-            # ── refresh client balance every 60s (keeps sizing ratio accurate) ─
+            # ── periodic license check ────────────────────────────────────────
             _now = time.time()
+            if _now - self._last_license_check >= LICENSE_CHECK_SEC:
+                self._last_license_check = _now
+                if not self._check_license(self._tws_account):
+                    self.root.after(0, lambda: self._log_err(
+                        "License revoked — account no longer authorized. Stopping engine."))
+                    self.root.after(0, lambda: self._stop_engine())
+                    break
+
+            # ── refresh client balance every 60s (keeps sizing ratio accurate) ─
             if _now - self._last_balance_refresh >= 60:
                 refreshed = self._get_client_balance()
                 if refreshed > 0:
