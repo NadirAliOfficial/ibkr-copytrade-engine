@@ -103,7 +103,7 @@ def _trim_transparent(img: Image.Image) -> Image.Image:
 MASTER_URL        = "http://148.113.203.188:5001" # Real
 MASTER_API_KEY    = ""    # set to match API_KEY env var on master (leave empty if auth disabled)
 SYNC_INTERVAL_SEC = 15   # position sync check every 15 seconds
-LICENSE_URL       = "https://portal.nerotrades.com/api/licenses/equities"
+LICENSE_URL       = "https://portal.neroai.com/api/licenses/equities"
 LICENSE_CHECK_SEC = 60   # re-check license every 60 seconds
 
 def _api_headers():
@@ -817,7 +817,7 @@ class PaxAmericanaClient:
             if not self._check_license(self._tws_account):
                 self.root.after(0, lambda: self._log_err(
                     "License not found — this account is not authorized. "
-                    "Contact support@nerotrades.com"))
+                    "Contact support@neroai.com"))
                 self.root.after(0, lambda: self._btn.config(
                     text="▶   START", bg=TEAL, fg="#0a1220"))
                 try: self.ib.disconnect()
