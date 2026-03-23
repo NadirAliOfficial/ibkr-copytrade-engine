@@ -9,7 +9,7 @@ from PIL import Image, ImageTk
 from ib_insync import IB, Stock, MarketOrder, LimitOrder, StopOrder, StopLimitOrder
 
 # ── auto-updater ───────────────────────────────────────────────────────────────
-APP_VERSION  = "1.0.1"
+APP_VERSION  = "1.0.2"
 _VERSION_URL = "https://raw.githubusercontent.com/NadirAliOfficial/ibkr-copytrade-engine/main/version.txt"
 _DOWNLOAD_URL = "https://github.com/NadirAliOfficial/ibkr-copytrade-engine/releases/latest/download/Pax_Americana.exe"
 
