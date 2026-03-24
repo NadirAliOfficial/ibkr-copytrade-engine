@@ -9,7 +9,7 @@ from PIL import Image, ImageTk
 from ib_insync import IB, Stock, MarketOrder, LimitOrder, StopOrder, StopLimitOrder
 
 # ── auto-updater ───────────────────────────────────────────────────────────────
-APP_VERSION  = "1.0.2"
+APP_VERSION  = "1.0.3"
 _VERSION_URL = "https://raw.githubusercontent.com/NadirAliOfficial/ibkr-copytrade-engine/main/version.txt"
 _DOWNLOAD_URL = "https://github.com/NadirAliOfficial/ibkr-copytrade-engine/releases/latest/download/Pax_Americana.exe"
 
@@ -135,7 +135,15 @@ class PaxAmericanaClient:
     def __init__(self, root):
         self.root    = root
         self.root.title("Pax Americana")
-        self.root.geometry("1000x750")
+        # Scale window to screen size, capped at 1000x750
+        sw = root.winfo_screenwidth()
+        sh = root.winfo_screenheight()
+        w = min(1000, int(sw * 0.85))
+        h = min(750, int(sh * 0.85))
+        x = (sw - w) // 2
+        y = (sh - h) // 2
+        self.root.geometry(f"{w}x{h}+{x}+{y}")
+        self.root.minsize(700, 500)
         self.root.configure(bg=BG)
         self.root.resizable(True, True)
 
@@ -195,6 +203,13 @@ class PaxAmericanaClient:
 
     # ── UI ────────────────────────────────────────────────────────────────────
     def _build_ui(self):
+        # Enable DPI awareness on Windows for crisp rendering at all scale factors
+        try:
+            import ctypes
+            ctypes.windll.shcore.SetProcessDpiAwareness(2)
+        except Exception:
+            pass
+
         hdr = tk.Frame(self.root, bg=PANEL2)
         hdr.pack(fill="x")
         stripe = tk.Canvas(hdr, height=3, bg=BG, highlightthickness=0)
@@ -241,8 +256,35 @@ class PaxAmericanaClient:
                                   font=("Segoe UI", 10), fg=SUB, bg=BG)
         self._bal_lbl.pack(side="right")
 
+        # ── Scrollable main content area ──
+        self._main_container = tk.Frame(self.root, bg=BG)
+        self._main_container.pack(fill="both", expand=True)
+
+        self._main_canvas = tk.Canvas(self._main_container, bg=BG, highlightthickness=0)
+        self._main_scrollbar = tk.Scrollbar(self._main_container, orient="vertical",
+                                             command=self._main_canvas.yview)
+        self._main_canvas.configure(yscrollcommand=self._main_scrollbar.set)
+
+        self._main_scrollbar.pack(side="right", fill="y")
+        self._main_canvas.pack(side="left", fill="both", expand=True)
+
+        self._scroll_frame = tk.Frame(self._main_canvas, bg=BG)
+        self._canvas_window = self._main_canvas.create_window((0, 0), window=self._scroll_frame, anchor="nw")
+
+        def _on_frame_configure(e):
+            self._main_canvas.configure(scrollregion=self._main_canvas.bbox("all"))
+        self._scroll_frame.bind("<Configure>", _on_frame_configure)
+
+        def _on_canvas_configure(e):
+            self._main_canvas.itemconfig(self._canvas_window, width=e.width)
+        self._main_canvas.bind("<Configure>", _on_canvas_configure)
+
+        def _on_mousewheel(event):
+            self._main_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+        self._main_canvas.bind_all("<MouseWheel>", _on_mousewheel)
+
         # connection panel
-        cp = tk.Frame(self.root, bg=PANEL, highlightthickness=1, highlightbackground=BORDER)
+        cp = tk.Frame(self._scroll_frame, bg=PANEL, highlightthickness=1, highlightbackground=BORDER)
         cp.pack(fill="x", padx=24, pady=(4, 8))
         ci = tk.Frame(cp, bg=PANEL, padx=20, pady=10)
         ci.pack(fill="x")
@@ -280,14 +322,14 @@ class PaxAmericanaClient:
 
         self._add_toggle_panel("EXECUTION MODE", self._mode,
             [("new","New Trades Only"),("all","Existing + New Trades")],
-            "_mode_lbl", self._on_mode_change)
+            "_mode_lbl", self._on_mode_change, self._scroll_frame)
 
         self._add_toggle_panel("TRADING MODE", self._trade_mode,
             [("long_short","Long & Short"),("long_only","Long Only")],
-            "_trade_lbl", self._on_trade_mode_change)
+            "_trade_lbl", self._on_trade_mode_change, self._scroll_frame)
 
         # risk management
-        rm = tk.Frame(self.root, bg=PANEL, highlightthickness=1, highlightbackground=BORDER)
+        rm = tk.Frame(self._scroll_frame, bg=PANEL, highlightthickness=1, highlightbackground=BORDER)
         rm.pack(fill="x", padx=24, pady=(0, 8))
         rm_inner = tk.Frame(rm, bg=PANEL, padx=20, pady=10)
         rm_inner.pack(fill="x")
@@ -326,7 +368,7 @@ class PaxAmericanaClient:
         self._risk_lbl.grid(row=3, column=0, columnspan=6, sticky="w", pady=(8,0))
 
         # stat cards
-        cards = tk.Frame(self.root, bg=BG)
+        cards = tk.Frame(self._scroll_frame, bg=BG)
         cards.pack(fill="x", padx=24, pady=(0, 8))
         self._stat_labels = {}
         for i, (title, key, color) in enumerate([
@@ -341,7 +383,7 @@ class PaxAmericanaClient:
             self._stat_labels[key] = v
 
         # log
-        lf = tk.Frame(self.root, bg=PANEL, highlightthickness=1, highlightbackground=BORDER)
+        lf = tk.Frame(self._scroll_frame, bg=PANEL, highlightthickness=1, highlightbackground=BORDER)
         lf.pack(fill="both", expand=True, padx=24, pady=(0, 16))
         lf_hdr = tk.Frame(lf, bg=BORDER, padx=16, pady=6)
         lf_hdr.pack(fill="x")
@@ -370,8 +412,8 @@ class PaxAmericanaClient:
 
         self._log_info("Pax Americana ready. Configure connection and press START.")
 
-    def _add_toggle_panel(self, label, var, options, desc_var, callback):
-        f = tk.Frame(self.root, bg=PANEL, highlightthickness=1, highlightbackground=BORDER)
+    def _add_toggle_panel(self, label, var, options, desc_var, callback, parent=None):
+        f = tk.Frame(parent or self.root, bg=PANEL, highlightthickness=1, highlightbackground=BORDER)
         f.pack(fill="x", padx=24, pady=(0, 8))
         inner = tk.Frame(f, bg=PANEL, padx=20, pady=12)
         inner.pack(fill="x")
