@@ -231,8 +231,24 @@ def connect_tws():
     global _ib_instance
     ib = IB()
     _ib_instance = ib
+
+    disconnect_flag = threading.Event()
+
+    def _on_disconnect():
+        print("⚠️  TWS disconnectedEvent fired")
+        disconnect_flag.set()
+
+    def _on_error(reqId, errorCode, errorString, contract):
+        # 1100 = connectivity lost; 504 = not connected
+        if errorCode in (1100, 504):
+            print(f"⚠️  TWS error {errorCode}: {errorString} — treating as disconnect")
+            disconnect_flag.set()
+
+    ib.disconnectedEvent += _on_disconnect
+    ib.errorEvent        += _on_error
+
     print(f"🔌  Connecting to TWS {TWS_HOST}:{TWS_PORT} clientId={TWS_CLIENT} ...")
-    ib.connect(TWS_HOST, TWS_PORT, clientId=TWS_CLIENT)
+    ib.connect(TWS_HOST, TWS_PORT, clientId=TWS_CLIENT, timeout=10)
     print("✅  TWS connected")
 
     update_balance(ib)
@@ -246,7 +262,10 @@ def connect_tws():
     ib.sleep(1)
 
     print(f"👂  Listening for orders on TWS…")
-    ib.run()   # blocks until TWS disconnects
+    # Drive the asyncio loop in slices so we exit cleanly on disconnect
+    while not disconnect_flag.is_set() and ib.isConnected():
+        ib.sleep(1)
+    print("🔌  connect_tws() exiting — reconnect will be attempted")
 
 # ── main ──────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
@@ -285,7 +304,7 @@ if __name__ == "__main__":
                     pass
             connect_tws()
             attempt = 0  # reset on clean disconnect
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"❌  TWS connect attempt {attempt} failed: {type(e).__name__}: {e}")
         print(f"⚠️  TWS not available — retrying in {RECONNECT_DELAY}s… (attempt {attempt})")
         time.sleep(RECONNECT_DELAY)
