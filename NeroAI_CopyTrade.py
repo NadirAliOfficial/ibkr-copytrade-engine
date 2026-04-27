@@ -9,7 +9,7 @@ from PIL import Image, ImageTk
 from ib_insync import IB, Stock, MarketOrder, LimitOrder, StopOrder, StopLimitOrder
 
 # ── auto-updater ───────────────────────────────────────────────────────────────
-APP_VERSION  = "1.0.7"
+APP_VERSION  = "1.0.8"
 _VERSION_URL = "https://raw.githubusercontent.com/NadirAliOfficial/ibkr-copytrade-engine/main/version.txt"
 _DOWNLOAD_URL = "https://github.com/NadirAliOfficial/ibkr-copytrade-engine/releases/latest/download/Pax_Americana.exe"
 
@@ -176,6 +176,11 @@ class PaxAmericanaClient:
 
         self._build_ui()
         self._set_icon()
+
+        # Prefetch the TWS account list on launch so the dropdown is
+        # populated BEFORE the user clicks START (license check needs the
+        # right account selected up front).
+        self.root.after(800, self._prefetch_accounts)
 
     # ── icon ──────────────────────────────────────────────────────────────────
     def _set_icon(self):
@@ -469,7 +474,46 @@ class PaxAmericanaClient:
         callback()
 
     # ── callbacks ─────────────────────────────────────────────────────────────
-    def _on_account_mode_change(self): pass
+    def _on_account_mode_change(self):
+        # Live/Paper toggled — re-probe the corresponding TWS port for accounts
+        self._prefetch_accounts()
+
+    # ── account prefetch (runs at launch + on Live/Paper toggle) ─────────────
+    def _prefetch_accounts(self):
+        """Spawn a background probe to fetch managedAccounts() from TWS so
+        the dropdown is populated before the user clicks START."""
+        if self.running:
+            return  # don't disturb the active engine connection
+        threading.Thread(target=self._prefetch_accounts_worker,
+                         daemon=True).start()
+
+    def _prefetch_accounts_worker(self):
+        import asyncio
+        asyncio.set_event_loop(asyncio.new_event_loop())
+        host = "127.0.0.1"
+        port = 7496 if self._account_mode.get() == "live" else 7497
+        # Use a low clientId distinct from master (0) and the engine (21+)
+        cid  = 19
+        probe = IB()
+        try:
+            probe.connect(host, port, clientId=cid, timeout=4)
+            accts = []
+            for _ in range(15):
+                accts = [a for a in (probe.managedAccounts() or []) if a]
+                if accts:
+                    break
+                probe.sleep(0.2)
+            self.root.after(0, lambda a=accts: self._populate_account_combo(a))
+            if accts:
+                self.root.after(0, lambda n=len(accts):
+                    self._log_info(f"Detected {n} TWS account(s) — pick one before pressing START"))
+        except Exception as e:
+            self.root.after(0, lambda exc=e: self._log_warn(
+                f"Account prefetch: TWS not reachable on port {port} "
+                f"({type(exc).__name__})"))
+        finally:
+            try: probe.disconnect()
+            except Exception: pass
 
     def _on_mode_change(self):
         self._mode_lbl.config(text="Only new orders placed after START will be executed"
