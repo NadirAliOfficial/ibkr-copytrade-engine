@@ -19,7 +19,7 @@ from PIL import Image, ImageTk
 from ib_insync import IB, Stock, MarketOrder, LimitOrder, StopOrder, StopLimitOrder
 
 # ── auto-updater ───────────────────────────────────────────────────────────────
-APP_VERSION  = "1.0.13"
+APP_VERSION  = "1.0.14"
 _VERSION_URL = "https://raw.githubusercontent.com/advillegas/pax-americana/main/version.txt"
 _DOWNLOAD_URL = "https://github.com/advillegas/pax-americana/releases/latest/download/Pax_Americana.exe"
 
@@ -463,10 +463,18 @@ class PaxAmericanaClient:
         ci.grid_columnconfigure(3, weight=1)
         tk.Label(ci, text="Account", font=FONT, fg=SUB, bg=PANEL).grid(
             row=1, column=3, sticky="w", padx=(40, 0))
-        self._acct_combo = ttk.Combobox(ci, textvariable=self._tws_account_var,
+        acct_row = tk.Frame(ci, bg=PANEL)
+        acct_row.grid(row=2, column=3, sticky="ew", padx=(40, 0))
+        self._acct_combo = ttk.Combobox(acct_row, textvariable=self._tws_account_var,
                                          values=[], state="readonly", width=22,
                                          font=FONT, style="Pax.TCombobox")
-        self._acct_combo.grid(row=2, column=3, sticky="ew", padx=(40, 0))
+        self._acct_combo.pack(side="left", fill="x", expand=True)
+        self._acct_refresh_btn = tk.Button(
+            acct_row, text="↻", font=("Consolas", 10, "bold"),
+            bg=BTN_GRAY, fg=TEXT, activebackground=BTN_GRAY_H, activeforeground=ACCENT,
+            relief="flat", bd=0, cursor="hand2", padx=8, pady=2,
+            command=self._prefetch_accounts)
+        self._acct_refresh_btn.pack(side="left", padx=(6, 0))
 
         self._add_toggle_panel("EXECUTION MODE", self._mode,
             [("new","New Trades Only"),("all","Existing + New Trades")],
@@ -631,31 +639,49 @@ class PaxAmericanaClient:
                          daemon=True).start()
 
     def _prefetch_accounts_worker(self):
+        """Probe TWS to fetch managedAccounts(). Tries the selected port
+        first, then the other port, and rotates through several clientIds
+        in case 19 is taken/restricted on the user's TWS install."""
         import asyncio
         asyncio.set_event_loop(asyncio.new_event_loop())
         host = "127.0.0.1"
-        port = 7496 if self._account_mode.get() == "live" else 7497
-        cid  = 19  # distinct from master (0) and engine (21+)
-        probe = IB()
-        try:
-            probe.connect(host, port, clientId=cid, timeout=4)
-            accts = []
-            for _ in range(15):
-                accts = [a for a in (probe.managedAccounts() or []) if a]
-                if accts:
-                    break
-                probe.sleep(0.2)
-            self.root.after(0, lambda a=accts: self._populate_account_combo(a))
-            if accts:
-                self.root.after(0, lambda n=len(accts):
-                    self._log_info(f"Detected {n} TWS account(s) — pick one before pressing START"))
-        except Exception as e:
-            self.root.after(0, lambda exc=e: self._log_warn(
-                f"Account prefetch: TWS not reachable on port {port} "
-                f"({type(exc).__name__})"))
-        finally:
-            try: probe.disconnect()
-            except Exception: pass
+        primary  = 7496 if self._account_mode.get() == "live" else 7497
+        fallback = 7497 if primary == 7496 else 7496
+        candidate_cids = [19, 99, 199, 299, 399, 499, 599, 699, 799, 899]
+
+        last_err = None
+        for port in (primary, fallback):
+            for cid in candidate_cids:
+                probe = IB()
+                try:
+                    probe.connect(host, port, clientId=cid, timeout=4)
+                    accts = []
+                    for _ in range(15):
+                        accts = [a for a in (probe.managedAccounts() or []) if a]
+                        if accts:
+                            break
+                        probe.sleep(0.2)
+                    self.root.after(0, lambda a=accts: self._populate_account_combo(a))
+                    if accts:
+                        self.root.after(0, lambda n=len(accts), p=port:
+                            self._log_ok(f"Detected {n} TWS account(s) on port {p} — pick one before pressing START"))
+                    else:
+                        self.root.after(0, lambda p=port:
+                            self._log_warn(f"Connected to TWS on port {p} but managedAccounts() returned empty"))
+                    return
+                except Exception as e:
+                    last_err = e
+                    if cid == candidate_cids[0]:
+                        msg = str(e) or type(e).__name__
+                        self.root.after(0, lambda p=port, m=msg, c=cid:
+                            self._log_warn(f"Account probe port={p} cid={c}: {m}"))
+                finally:
+                    try: probe.disconnect()
+                    except Exception: pass
+
+        self.root.after(0, lambda err=last_err: self._log_err(
+            f"Account prefetch: could not reach TWS on 7497 or 7496 "
+            f"({type(err).__name__ if err else 'no response'} — is TWS running with API enabled?)"))
 
     def _on_mode_change(self):
         self._mode_lbl.config(text="Only new orders placed after START will be executed"
