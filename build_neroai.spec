@@ -46,8 +46,11 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
-    upx_exclude=[],
+    # UPX disabled: compressing python3xx.dll caused the bundled bootloader
+    # to crash with "Failed to load Python DLL" after auto-update on some
+    # Windows installs (Defender flags UPX-packed DLLs and quarantines them).
+    upx=False,
+    upx_exclude=['python*.dll', 'vcruntime*.dll', 'msvcp*.dll'],
     runtime_tmpdir=None,
     console=False,
     disable_windowed_traceback=False,
