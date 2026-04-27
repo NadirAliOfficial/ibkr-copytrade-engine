@@ -1,5 +1,5 @@
 import tkinter as tk
-from tkinter import scrolledtext, messagebox
+from tkinter import scrolledtext, messagebox, ttk
 import os
 import sys
 import subprocess
@@ -9,7 +9,7 @@ from PIL import Image, ImageTk
 from ib_insync import IB, Stock, MarketOrder, LimitOrder, StopOrder, StopLimitOrder
 
 # ── auto-updater ───────────────────────────────────────────────────────────────
-APP_VERSION  = "1.0.3"
+APP_VERSION  = "1.0.4"
 _VERSION_URL = "https://raw.githubusercontent.com/NadirAliOfficial/ibkr-copytrade-engine/main/version.txt"
 _DOWNLOAD_URL = "https://github.com/NadirAliOfficial/ibkr-copytrade-engine/releases/latest/download/Pax_Americana.exe"
 
@@ -155,6 +155,8 @@ class PaxAmericanaClient:
         self._mode                 = tk.StringVar(value="new")
         self._trade_mode           = tk.StringVar(value="long_short")
         self._account_mode         = tk.StringVar(value="live")
+        self._tws_account_var      = tk.StringVar(value="")
+        self._tws_account          = ""
         self._multiplier           = tk.DoubleVar(value=1.0)
         self._max_drawdown         = tk.DoubleVar(value=10.0)
         self._start_balance        = 0.0
@@ -306,11 +308,41 @@ class PaxAmericanaClient:
                 command=self._on_account_mode_change
             ).pack(side="left", padx=(0,4))
 
+        # Account dropdown — auto-populated from TWS managedAccounts()
+        tk.Label(ci, text="Account", font=("Segoe UI", 10), fg=SUB, bg=PANEL).grid(
+            row=1, column=1, sticky="w", padx=(0,4))
+        # Theme the readonly Combobox to match the dark UI
+        try:
+            style = ttk.Style(self.root)
+            try: style.theme_use("clam")
+            except Exception: pass
+            style.configure("Pax.TCombobox",
+                fieldbackground=DIM2, background=DIM2, foreground=TEXT,
+                arrowcolor=TEAL, bordercolor=BORDER, lightcolor=BORDER,
+                darkcolor=BORDER, selectbackground=DIM2, selectforeground=TEXT,
+                padding=4)
+            style.map("Pax.TCombobox",
+                fieldbackground=[("readonly", DIM2), ("disabled", DIM2)],
+                foreground=[("readonly", TEXT), ("disabled", SUB)],
+                selectbackground=[("readonly", DIM2)],
+                selectforeground=[("readonly", TEXT)])
+            self.root.option_add("*TCombobox*Listbox.background", DIM2)
+            self.root.option_add("*TCombobox*Listbox.foreground", TEXT)
+            self.root.option_add("*TCombobox*Listbox.selectBackground", TEAL)
+            self.root.option_add("*TCombobox*Listbox.selectForeground", "#0a1220")
+            self.root.option_add("*TCombobox*Listbox.font", ("Consolas", 10))
+        except Exception:
+            pass
+        self._acct_combo = ttk.Combobox(ci, textvariable=self._tws_account_var,
+                                         values=[], state="readonly", width=18,
+                                         font=("Consolas", 10), style="Pax.TCombobox")
+        self._acct_combo.grid(row=2, column=1, sticky="w", padx=(0, 20))
+
         self._btn = tk.Button(ci, text="▶   START", font=("Segoe UI", 11, "bold"),
                                bg=TEAL, fg="#0a1220", relief="flat",
                                activebackground="#00e8c0", activeforeground="#0a1220",
                                cursor="hand2", padx=28, pady=9, command=self._toggle)
-        self._btn.grid(row=2, column=1)
+        self._btn.grid(row=2, column=2)
 
         self._close_all_btn = tk.Button(
             ci, text="CLOSE ALL TRADES", font=("Segoe UI", 11, "bold"),
@@ -318,7 +350,7 @@ class PaxAmericanaClient:
             activebackground="#ffe08a", activeforeground="#0a1220",
             cursor="hand2", padx=22, pady=9, command=self._close_all_trades
         )
-        self._close_all_btn.grid(row=2, column=2, padx=(10, 0))
+        self._close_all_btn.grid(row=2, column=3, padx=(10, 0))
 
         self._add_toggle_panel("EXECUTION MODE", self._mode,
             [("new","New Trades Only"),("all","Existing + New Trades")],
@@ -799,97 +831,26 @@ class PaxAmericanaClient:
             self._log_warn(f"License check failed: {e}")
             return False
 
-    # ── account selection ─────────────────────────────────────────────────────
-    def _select_tws_account(self, accts):
-        """Pick which TWS account to use.
+    # ── account dropdown ─────────────────────────────────────────────────────
+    def _populate_account_combo(self, accts):
+        """Push the detected TWS account list into the dropdown.
 
-        - 0 accounts → return ""
-        - 1 account  → return it (no prompt)
-        - 2+         → modal dropdown so user picks the active subaccount.
-        Called from the worker thread; blocks until the user picks.
+        Preserves the user's current selection if it's still present,
+        otherwise auto-selects the first account.
+        Must run on the Tk main thread.
         """
-        accts = [a for a in (accts or []) if a]  # drop blanks
-        if not accts:
-            return ""
-        if len(accts) == 1:
-            return accts[0]
-
-        result = {"acct": None}
-        done = threading.Event()
-
-        def _show_dialog():
-            top = tk.Toplevel(self.root)
-            top.title("Select TWS Account")
-            top.configure(bg=BG)
-            top.transient(self.root)
-            top.grab_set()
-            top.resizable(False, False)
-            try:
-                if getattr(self, "_app_icon_imgs", None):
-                    top.iconphoto(False, *self._app_icon_imgs)
-            except Exception:
-                pass
-
-            frm = tk.Frame(top, bg=PANEL, padx=24, pady=20,
-                           highlightthickness=1, highlightbackground=BORDER)
-            frm.pack(fill="both", expand=True, padx=16, pady=16)
-
-            tk.Label(frm,
-                text="MULTIPLE ACCOUNTS DETECTED",
-                font=("Segoe UI", 8, "bold"),
-                fg=TEAL, bg=PANEL).pack(anchor="w")
-            tk.Label(frm,
-                text="Choose the account you want to copy into:",
-                font=("Segoe UI", 10), fg=TEXT, bg=PANEL,
-                pady=8).pack(anchor="w")
-
-            sel = tk.StringVar(value=accts[0])
-            opt = tk.OptionMenu(frm, sel, *accts)
-            opt.config(font=("Segoe UI", 10), bg=DIM2, fg=TEXT,
-                       activebackground=PANEL, activeforeground=TEAL,
-                       highlightthickness=1, highlightbackground=BORDER,
-                       relief="flat", cursor="hand2", width=22)
-            try:
-                opt["menu"].config(bg=DIM2, fg=TEXT,
-                                   activebackground=TEAL,
-                                   activeforeground="#0a1220")
-            except Exception:
-                pass
-            opt.pack(fill="x", pady=(0, 14))
-
-            btns = tk.Frame(frm, bg=PANEL)
-            btns.pack(fill="x")
-
-            def _ok():
-                result["acct"] = sel.get()
-                done.set()
-                top.destroy()
-
-            def _cancel():
-                result["acct"] = None
-                done.set()
-                top.destroy()
-
-            tk.Button(btns, text="Cancel", font=("Segoe UI", 10),
-                      bg=DIM2, fg=TEXT, activebackground=BORDER,
-                      relief="flat", cursor="hand2", padx=14, pady=6,
-                      command=_cancel).pack(side="right", padx=(8, 0))
-            tk.Button(btns, text="Use Account", font=("Segoe UI", 10, "bold"),
-                      bg=TEAL, fg="#0a1220", activebackground="#00e8c0",
-                      relief="flat", cursor="hand2", padx=14, pady=6,
-                      command=_ok).pack(side="right")
-
-            top.protocol("WM_DELETE_WINDOW", _cancel)
-
-            top.update_idletasks()
-            w, h = top.winfo_reqwidth(), top.winfo_reqheight()
-            rx = self.root.winfo_rootx() + (self.root.winfo_width()  - w) // 2
-            ry = self.root.winfo_rooty() + (self.root.winfo_height() - h) // 2
-            top.geometry(f"+{max(rx,0)}+{max(ry,0)}")
-
-        self.root.after(0, _show_dialog)
-        done.wait()
-        return result["acct"] or ""
+        accts = [a for a in (accts or []) if a]
+        try:
+            self._acct_combo.config(values=accts)
+        except Exception:
+            return
+        current = self._tws_account_var.get()
+        if current and current in accts:
+            return  # keep prior selection
+        if accts:
+            self._tws_account_var.set(accts[0])
+        else:
+            self._tws_account_var.set("")
 
     # ── start / stop ──────────────────────────────────────────────────────────
     def _toggle(self):
@@ -945,14 +906,21 @@ class PaxAmericanaClient:
                     break
                 self.ib.sleep(0.2)
 
-            if len(accts) > 1:
-                self.root.after(0, lambda n=len(accts):
-                    self._log_info(f"TWS reports {n} accounts — prompting for selection"))
+            # Push the full enumerated list into the dropdown on the main
+            # thread, then read back the user's (or auto-selected) choice.
+            populated = threading.Event()
+            def _populate_then_signal():
+                self._populate_account_combo(accts)
+                populated.set()
+            self.root.after(0, _populate_then_signal)
+            populated.wait(timeout=2)
 
-            self._tws_account = self._select_tws_account(accts)
+            self._tws_account = self._tws_account_var.get().strip()
+            if len(accts) > 1:
+                self.root.after(0, lambda n=len(accts), a=self._tws_account:
+                    self._log_info(f"TWS reports {n} accounts — using {a} (change via Account dropdown)"))
             if not self._tws_account:
                 self.root.after(0, lambda: self._log_err(
-                    "No TWS account selected." if accts else
                     "Could not retrieve TWS account number."))
                 self.root.after(0, lambda: self._btn.config(
                     text="▶   START", bg=TEAL, fg="#0a1220"))
