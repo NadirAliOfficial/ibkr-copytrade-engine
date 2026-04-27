@@ -4,6 +4,10 @@ on:
   push:
     paths:
       - 'version.txt'   # trigger only when version.txt is updated
+  workflow_dispatch:   # allow manual re-runs from the Actions tab
+
+permissions:
+  contents: write   # required by softprops/action-gh-release to create the release
 
 jobs:
   build:
