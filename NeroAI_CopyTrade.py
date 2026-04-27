@@ -19,9 +19,9 @@ from PIL import Image, ImageTk
 from ib_insync import IB, Stock, MarketOrder, LimitOrder, StopOrder, StopLimitOrder
 
 # ── auto-updater ───────────────────────────────────────────────────────────────
-APP_VERSION  = "1.0.10"
-_VERSION_URL = "https://raw.githubusercontent.com/NadirAliOfficial/ibkr-copytrade-engine/main/version.txt"
-_DOWNLOAD_URL = "https://github.com/NadirAliOfficial/ibkr-copytrade-engine/releases/latest/download/Pax_Americana.zip"
+APP_VERSION  = "1.0.11"
+_VERSION_URL = "https://raw.githubusercontent.com/advillegas/pax-americana/main/version.txt"
+_DOWNLOAD_URL = "https://github.com/advillegas/pax-americana/releases/latest/download/Pax_Americana.zip"
 
 def _version_tuple(v):
     try:
