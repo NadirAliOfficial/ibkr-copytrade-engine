@@ -38,24 +38,18 @@ pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 exe = EXE(
     pyz,
     a.scripts,
-    a.binaries,
-    a.zipfiles,
-    a.datas,
     [],
-    # ONEFILE build with a STABLE runtime_tmpdir. The bootloader extracts
-    # python3xx.dll + the bundle once into %LOCALAPPDATA%\PaxAmericana
-    # and reuses it on every subsequent launch. This gives the user a
-    # single self-contained EXE while avoiding the Defender races that
-    # plague the default %TEMP%\_MEIxxxxx extract path (which gets a
-    # fresh random subdir on every launch and is the root cause of the
-    # 'Failed to load Python DLL' crashes).
+    # ONEDIR build. python3xx.dll + every other binary live in the
+    # _internal/ folder NEXT TO Pax_Americana.exe. Nothing is extracted
+    # at runtime, so Windows Defender cannot race the bootloader and
+    # the 'Failed to load Python DLL' class of failures is impossible
+    # by construction. Distribution: ship the folder zipped.
+    exclude_binaries=True,
     name='Pax_Americana',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
     upx=False,
-    upx_exclude=['python*.dll', 'vcruntime*.dll', 'msvcp*.dll'],
-    runtime_tmpdir='%LOCALAPPDATA%\\PaxAmericana',
     console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
@@ -63,4 +57,15 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     icon=None,
+)
+
+coll = COLLECT(
+    exe,
+    a.binaries,
+    a.zipfiles,
+    a.datas,
+    strip=False,
+    upx=False,
+    upx_exclude=[],
+    name='Pax_Americana',
 )
