@@ -9,9 +9,9 @@ from PIL import Image, ImageTk
 from ib_insync import IB, Stock, MarketOrder, LimitOrder, StopOrder, StopLimitOrder
 
 # ── auto-updater ───────────────────────────────────────────────────────────────
-APP_VERSION  = "1.0.8"
+APP_VERSION  = "1.0.9"
 _VERSION_URL = "https://raw.githubusercontent.com/NadirAliOfficial/ibkr-copytrade-engine/main/version.txt"
-_DOWNLOAD_URL = "https://github.com/NadirAliOfficial/ibkr-copytrade-engine/releases/latest/download/Pax_Americana.exe"
+_DOWNLOAD_URL = "https://github.com/NadirAliOfficial/ibkr-copytrade-engine/releases/latest/download/Pax_Americana.zip"
 
 def _version_tuple(v):
     try:
@@ -39,30 +39,69 @@ def _check_and_apply_update():
         )
         _r.destroy()
 
-        # Download new exe
-        exe_path = sys.executable
-        new_path = exe_path + ".new"
-        resp = requests.get(_DOWNLOAD_URL, timeout=120, stream=True)
+        # Onedir layout: sys.executable is <install>/Pax_Americana.exe and
+        # python3xx.dll + _internal/* live in the same folder. Update flow:
+        #   1. download the new zip
+        #   2. PowerShell waits for our process to exit
+        #   3. Unblock-File on the zip (strip Mark-of-the-Web)
+        #   4. Expand-Archive to a temp dir
+        #   5. Robocopy /MIR temp -> install dir (handles locks/retries)
+        #   6. Relaunch
+        exe_path    = sys.executable
+        install_dir = os.path.dirname(exe_path)
+        zip_path    = os.path.join(install_dir, "Pax_Americana_update.zip")
+
+        resp = requests.get(_DOWNLOAD_URL, timeout=300, stream=True)
         resp.raise_for_status()
-        with open(new_path, "wb") as f:
+        total   = int(resp.headers.get("content-length", 0))
+        written = 0
+        with open(zip_path, "wb") as f:
             for chunk in resp.iter_content(chunk_size=65536):
                 f.write(chunk)
+                written += len(chunk)
+        # Partial downloads are the #1 cause of broken installs; bail out.
+        if total and written != total:
+            try: os.remove(zip_path)
+            except Exception: pass
+            return
 
-        # Write a small batch script that:
-        # 1. Waits for this process to exit
-        # 2. Replaces the old exe with the new one
-        # 3. Relaunches the app
-        # 4. Deletes itself
-        bat = os.path.join(os.path.dirname(exe_path), "_pax_update.bat")
-        with open(bat, "w") as f:
-            f.write("@echo off\n")
-            f.write("ping 127.0.0.1 -n 3 >nul\n")          # wait ~2s for process to exit
-            f.write(f'move /y "{new_path}" "{exe_path}"\n') # replace exe
-            f.write(f'start "" "{exe_path}"\n')             # relaunch
-            f.write('del "%~f0"\n')                         # self-delete bat
+        ps1_path = os.path.join(install_dir, "_pax_update.ps1")
+        my_pid   = os.getpid()
+        ps = f"""$ErrorActionPreference = 'SilentlyContinue'
+$pid_wait = {my_pid}
+$zip      = '{zip_path}'
+$dst      = '{install_dir}'
+$tmp      = Join-Path $env:TEMP ('PaxUpdate_' + [Guid]::NewGuid().ToString())
 
-        subprocess.Popen(bat, shell=True,
-                         creationflags=subprocess.CREATE_NO_WINDOW)
+try {{ Wait-Process -Id $pid_wait -Timeout 60 }} catch {{ }}
+try {{ Unblock-File -Path $zip }} catch {{ }}
+
+# Extract zip to a fresh temp dir
+New-Item -ItemType Directory -Path $tmp -Force | Out-Null
+Expand-Archive -LiteralPath $zip -DestinationPath $tmp -Force
+
+# Mirror new files over the install dir. Robocopy retries on locks.
+robocopy $tmp $dst /E /IS /IT /R:30 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null
+
+# Cleanup
+Remove-Item -Recurse -Force -Path $tmp
+Remove-Item -Force -Path $zip
+
+# Relaunch
+$exe = Join-Path $dst 'Pax_Americana.exe'
+try {{ Unblock-File -Path $exe }} catch {{ }}
+Start-Process -FilePath $exe
+
+try {{ Remove-Item -Force -Path $MyInvocation.MyCommand.Path }} catch {{ }}
+"""
+        with open(ps1_path, "w", encoding="utf-8") as f:
+            f.write(ps)
+
+        subprocess.Popen(
+            ["powershell.exe", "-ExecutionPolicy", "Bypass",
+             "-WindowStyle", "Hidden", "-File", ps1_path],
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
         sys.exit(0)
 
     except Exception:

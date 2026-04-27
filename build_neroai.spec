@@ -38,20 +38,19 @@ pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 exe = EXE(
     pyz,
     a.scripts,
-    a.binaries,
-    a.zipfiles,
-    a.datas,
     [],
+    # ONEDIR build: binaries/datas live next to the exe instead of being
+    # bundled into a self-extracting onefile. Onefile mode is a Trojan-
+    # looking bootloader that extracts python3xx.dll to %TEMP%\_MEIxxxx
+    # on every launch — Defender intermittently quarantines that extract,
+    # producing 'Failed to load Python DLL' crashes. Onedir is shipped as
+    # a folder (zipped for distribution) and is fully self-contained.
+    exclude_binaries=True,
     name='Pax_Americana',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    # UPX disabled: compressing python3xx.dll caused the bundled bootloader
-    # to crash with "Failed to load Python DLL" after auto-update on some
-    # Windows installs (Defender flags UPX-packed DLLs and quarantines them).
     upx=False,
-    upx_exclude=['python*.dll', 'vcruntime*.dll', 'msvcp*.dll'],
-    runtime_tmpdir=None,
     console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
@@ -59,4 +58,15 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     icon=None,
+)
+
+coll = COLLECT(
+    exe,
+    a.binaries,
+    a.zipfiles,
+    a.datas,
+    strip=False,
+    upx=False,
+    upx_exclude=[],
+    name='Pax_Americana',
 )
