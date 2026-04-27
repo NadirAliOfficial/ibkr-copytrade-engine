@@ -34,22 +34,15 @@ jobs:
           echo "VERSION=$version" >> $env:GITHUB_OUTPUT
         shell: pwsh
 
-      - name: Build onedir bundle
+      - name: Build single-exe bundle
         run: pyinstaller build_neroai.spec
 
-      - name: Zip the onedir bundle
-        shell: pwsh
-        run: |
-          Compress-Archive -Path dist/Pax_Americana/* `
-                           -DestinationPath dist/Pax_Americana.zip `
-                           -Force
-
-      - name: Create GitHub Release & upload zip
+      - name: Create GitHub Release & upload exe
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ steps.version.outputs.VERSION }}
           name: Pax Americana v${{ steps.version.outputs.VERSION }}
-          files: dist/Pax_Americana.zip
+          files: dist/Pax_Americana.exe
           generate_release_notes: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

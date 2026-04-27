@@ -19,9 +19,9 @@ from PIL import Image, ImageTk
 from ib_insync import IB, Stock, MarketOrder, LimitOrder, StopOrder, StopLimitOrder
 
 # ── auto-updater ───────────────────────────────────────────────────────────────
-APP_VERSION  = "1.0.11"
+APP_VERSION  = "1.0.13"
 _VERSION_URL = "https://raw.githubusercontent.com/advillegas/pax-americana/main/version.txt"
-_DOWNLOAD_URL = "https://github.com/advillegas/pax-americana/releases/latest/download/Pax_Americana.zip"
+_DOWNLOAD_URL = "https://github.com/advillegas/pax-americana/releases/latest/download/Pax_Americana.exe"
 
 def _version_tuple(v):
     try:
@@ -49,53 +49,51 @@ def _check_and_apply_update():
         )
         _r.destroy()
 
-        # Onedir layout: sys.executable is <install>/Pax_Americana.exe and
-        # python3xx.dll + _internal/* live in the same folder. Update flow:
-        #   1. download the new zip
-        #   2. PowerShell waits for our process to exit
-        #   3. Unblock-File on the zip (strip Mark-of-the-Web)
-        #   4. Expand-Archive to a temp dir
-        #   5. Robocopy /MIR temp -> install dir (handles locks/retries)
-        #   6. Relaunch
-        exe_path    = sys.executable
-        install_dir = os.path.dirname(exe_path)
-        zip_path    = os.path.join(install_dir, "Pax_Americana_update.zip")
+        # Single-exe update flow (matches the onefile + persistent
+        # runtime_tmpdir build): download the new exe alongside, then a
+        # PowerShell helper waits for us to exit, strips Mark-of-the-Web,
+        # and renames it over the running file with a 30x retry loop in
+        # case Defender holds a transient lock.
+        exe_path = sys.executable
+        new_path = exe_path + ".new"
 
         resp = requests.get(_DOWNLOAD_URL, timeout=300, stream=True)
         resp.raise_for_status()
         total   = int(resp.headers.get("content-length", 0))
         written = 0
-        with open(zip_path, "wb") as f:
+        with open(new_path, "wb") as f:
             for chunk in resp.iter_content(chunk_size=65536):
                 f.write(chunk)
                 written += len(chunk)
         if total and written != total:
-            try: os.remove(zip_path)
+            try: os.remove(new_path)
             except Exception: pass
             return
 
-        ps1_path = os.path.join(install_dir, "_pax_update.ps1")
+        ps1_path = os.path.join(os.path.dirname(exe_path), "_pax_update.ps1")
         my_pid   = os.getpid()
         ps = f"""$ErrorActionPreference = 'SilentlyContinue'
 $pid_wait = {my_pid}
-$zip      = '{zip_path}'
-$dst      = '{install_dir}'
-$tmp      = Join-Path $env:TEMP ('PaxUpdate_' + [Guid]::NewGuid().ToString())
+$old      = '{exe_path}'
+$new      = '{new_path}'
 
 try {{ Wait-Process -Id $pid_wait -Timeout 60 }} catch {{ }}
-try {{ Unblock-File -Path $zip }} catch {{ }}
+try {{ Unblock-File -Path $new }} catch {{ }}
 
-New-Item -ItemType Directory -Path $tmp -Force | Out-Null
-Expand-Archive -LiteralPath $zip -DestinationPath $tmp -Force
+# Also wipe the persistent runtime extract so the new bootloader
+# re-extracts cleanly on first launch.
+$runtime = Join-Path $env:LOCALAPPDATA 'PaxAmericana'
+if (Test-Path $runtime) {{
+    try {{ Remove-Item -Recurse -Force -Path $runtime }} catch {{ }}
+}}
 
-robocopy $tmp $dst /E /IS /IT /R:30 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null
+for ($i = 0; $i -lt 30; $i++) {{
+    try {{ Move-Item -Force -Path $new -Destination $old; break }}
+    catch {{ Start-Sleep -Seconds 1 }}
+}}
 
-Remove-Item -Recurse -Force -Path $tmp
-Remove-Item -Force -Path $zip
-
-$exe = Join-Path $dst 'Pax_Americana.exe'
-try {{ Unblock-File -Path $exe }} catch {{ }}
-Start-Process -FilePath $exe
+try {{ Unblock-File -Path $old }} catch {{ }}
+Start-Process -FilePath $old
 
 try {{ Remove-Item -Force -Path $MyInvocation.MyCommand.Path }} catch {{ }}
 """
@@ -279,15 +277,34 @@ class PaxAmericanaClient:
 
     # ── UI ────────────────────────────────────────────────────────────────────
     def _build_ui(self):
-        # -- ttk scrollbar styling --
+        # -- ttk styling (one theme rules them all so combobox + scrollbar
+        # don't fight each other) --
         style = ttk.Style()
-        style.theme_use("default")
+        try: style.theme_use("clam")
+        except Exception: pass
+
+        # Slim, arrowless dark scrollbar — override clam's default layout to
+        # drop the up/down buttons entirely so we just get a thumb + trough.
+        try:
+            style.layout("Dark.Vertical.TScrollbar", [
+                ('Vertical.Scrollbar.trough', {
+                    'children': [('Vertical.Scrollbar.thumb', {
+                        'expand': '1', 'sticky': 'nswe'
+                    })],
+                    'sticky': 'ns',
+                }),
+            ])
+        except Exception:
+            pass
         style.configure("Dark.Vertical.TScrollbar",
                          background=BORDER, troughcolor=BG,
-                         bordercolor=BG, arrowcolor=BORDER,
-                         relief="flat", borderwidth=0)
+                         bordercolor=BG, lightcolor=BG, darkcolor=BG,
+                         relief="flat", borderwidth=0, gripcount=0,
+                         arrowcolor=BORDER, arrowsize=0)
         style.map("Dark.Vertical.TScrollbar",
-                   background=[("active", GREEN_DIM), ("!active", BORDER)])
+                   background=[("pressed", ACCENT),
+                               ("active",  GREEN_DIM),
+                               ("!active", BORDER)])
 
         hdr = tk.Frame(self.root, bg=PANEL2)
         hdr.pack(fill="x")
@@ -426,8 +443,6 @@ class PaxAmericanaClient:
         # auto-populated from TWS managedAccounts() at launch + on toggle.
         try:
             style = ttk.Style(self.root)
-            try: style.theme_use("clam")
-            except Exception: pass
             style.configure("Pax.TCombobox",
                 fieldbackground=BG_INPUT, background=BG_INPUT, foreground=TEXT,
                 arrowcolor=ACCENT, bordercolor=BORDER, lightcolor=BORDER,
