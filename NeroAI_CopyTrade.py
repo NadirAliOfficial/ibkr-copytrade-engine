@@ -9,7 +9,7 @@ from PIL import Image, ImageTk
 from ib_insync import IB, Stock, MarketOrder, LimitOrder, StopOrder, StopLimitOrder
 
 # ── auto-updater ───────────────────────────────────────────────────────────────
-APP_VERSION  = "1.0.5"
+APP_VERSION  = "1.0.6"
 _VERSION_URL = "https://raw.githubusercontent.com/NadirAliOfficial/ibkr-copytrade-engine/main/version.txt"
 _DOWNLOAD_URL = "https://github.com/NadirAliOfficial/ibkr-copytrade-engine/releases/latest/download/Pax_Americana.exe"
 
@@ -308,9 +308,6 @@ class PaxAmericanaClient:
                 command=self._on_account_mode_change
             ).pack(side="left", padx=(0,4))
 
-        # Account dropdown — auto-populated from TWS managedAccounts()
-        tk.Label(ci, text="Account", font=("Segoe UI", 10), fg=SUB, bg=PANEL).grid(
-            row=1, column=1, sticky="w", padx=(0,4))
         # Theme the readonly Combobox to match the dark UI
         try:
             style = ttk.Style(self.root)
@@ -333,16 +330,12 @@ class PaxAmericanaClient:
             self.root.option_add("*TCombobox*Listbox.font", ("Consolas", 10))
         except Exception:
             pass
-        self._acct_combo = ttk.Combobox(ci, textvariable=self._tws_account_var,
-                                         values=[], state="readonly", width=18,
-                                         font=("Consolas", 10), style="Pax.TCombobox")
-        self._acct_combo.grid(row=2, column=1, sticky="w", padx=(0, 20))
 
         self._btn = tk.Button(ci, text="▶   START", font=("Segoe UI", 11, "bold"),
                                bg=TEAL, fg="#0a1220", relief="flat",
                                activebackground="#00e8c0", activeforeground="#0a1220",
                                cursor="hand2", padx=28, pady=9, command=self._toggle)
-        self._btn.grid(row=2, column=2)
+        self._btn.grid(row=2, column=1)
 
         self._close_all_btn = tk.Button(
             ci, text="CLOSE ALL TRADES", font=("Segoe UI", 11, "bold"),
@@ -350,7 +343,17 @@ class PaxAmericanaClient:
             activebackground="#ffe08a", activeforeground="#0a1220",
             cursor="hand2", padx=22, pady=9, command=self._close_all_trades
         )
-        self._close_all_btn.grid(row=2, column=3, padx=(10, 0))
+        self._close_all_btn.grid(row=2, column=2, padx=(10, 0))
+
+        # Account dropdown — placed to the right of CLOSE ALL TRADES,
+        # auto-populated from TWS managedAccounts() on START.
+        ci.grid_columnconfigure(3, weight=1)
+        tk.Label(ci, text="Account", font=("Segoe UI", 10), fg=SUB, bg=PANEL).grid(
+            row=1, column=3, sticky="w", padx=(40, 0))
+        self._acct_combo = ttk.Combobox(ci, textvariable=self._tws_account_var,
+                                         values=[], state="readonly", width=22,
+                                         font=("Consolas", 10), style="Pax.TCombobox")
+        self._acct_combo.grid(row=2, column=3, sticky="ew", padx=(40, 0))
 
         self._add_toggle_panel("EXECUTION MODE", self._mode,
             [("new","New Trades Only"),("all","Existing + New Trades")],
