@@ -799,6 +799,98 @@ class PaxAmericanaClient:
             self._log_warn(f"License check failed: {e}")
             return False
 
+    # ── account selection ─────────────────────────────────────────────────────
+    def _select_tws_account(self, accts):
+        """Pick which TWS account to use.
+
+        - 0 accounts → return ""
+        - 1 account  → return it (no prompt)
+        - 2+         → modal dropdown so user picks the active subaccount.
+        Called from the worker thread; blocks until the user picks.
+        """
+        accts = [a for a in (accts or []) if a]  # drop blanks
+        if not accts:
+            return ""
+        if len(accts) == 1:
+            return accts[0]
+
+        result = {"acct": None}
+        done = threading.Event()
+
+        def _show_dialog():
+            top = tk.Toplevel(self.root)
+            top.title("Select TWS Account")
+            top.configure(bg=BG)
+            top.transient(self.root)
+            top.grab_set()
+            top.resizable(False, False)
+            try:
+                if getattr(self, "_app_icon_imgs", None):
+                    top.iconphoto(False, *self._app_icon_imgs)
+            except Exception:
+                pass
+
+            frm = tk.Frame(top, bg=PANEL, padx=24, pady=20,
+                           highlightthickness=1, highlightbackground=BORDER)
+            frm.pack(fill="both", expand=True, padx=16, pady=16)
+
+            tk.Label(frm,
+                text="MULTIPLE ACCOUNTS DETECTED",
+                font=("Segoe UI", 8, "bold"),
+                fg=TEAL, bg=PANEL).pack(anchor="w")
+            tk.Label(frm,
+                text="Choose the account you want to copy into:",
+                font=("Segoe UI", 10), fg=TEXT, bg=PANEL,
+                pady=8).pack(anchor="w")
+
+            sel = tk.StringVar(value=accts[0])
+            opt = tk.OptionMenu(frm, sel, *accts)
+            opt.config(font=("Segoe UI", 10), bg=DIM2, fg=TEXT,
+                       activebackground=PANEL, activeforeground=TEAL,
+                       highlightthickness=1, highlightbackground=BORDER,
+                       relief="flat", cursor="hand2", width=22)
+            try:
+                opt["menu"].config(bg=DIM2, fg=TEXT,
+                                   activebackground=TEAL,
+                                   activeforeground="#0a1220")
+            except Exception:
+                pass
+            opt.pack(fill="x", pady=(0, 14))
+
+            btns = tk.Frame(frm, bg=PANEL)
+            btns.pack(fill="x")
+
+            def _ok():
+                result["acct"] = sel.get()
+                done.set()
+                top.destroy()
+
+            def _cancel():
+                result["acct"] = None
+                done.set()
+                top.destroy()
+
+            tk.Button(btns, text="Cancel", font=("Segoe UI", 10),
+                      bg=DIM2, fg=TEXT, activebackground=BORDER,
+                      relief="flat", cursor="hand2", padx=14, pady=6,
+                      command=_cancel).pack(side="right", padx=(8, 0))
+            tk.Button(btns, text="Use Account", font=("Segoe UI", 10, "bold"),
+                      bg=TEAL, fg="#0a1220", activebackground="#00e8c0",
+                      relief="flat", cursor="hand2", padx=14, pady=6,
+                      command=_ok).pack(side="right")
+
+            top.protocol("WM_DELETE_WINDOW", _cancel)
+
+            top.update_idletasks()
+            w, h = top.winfo_reqwidth(), top.winfo_reqheight()
+            rx = self.root.winfo_rootx() + (self.root.winfo_width()  - w) // 2
+            ry = self.root.winfo_rooty() + (self.root.winfo_height() - h) // 2
+            top.geometry(f"+{max(rx,0)}+{max(ry,0)}")
+
+        self.root.after(0, _show_dialog)
+        done.wait()
+        return result["acct"] or ""
+
     # ── start / stop ──────────────────────────────────────────────────────────
     def _toggle(self):
         if not self.running: self._start()
@@ -844,10 +936,23 @@ class PaxAmericanaClient:
             self.ib.connect(host, port, clientId=cid)
 
             # ── license gate ──────────────────────────────────────────
-            accts = self.ib.managedAccounts()
-            self._tws_account = accts[0] if accts else ""
+            # managedAccounts() can briefly return [] right after connect —
+            # poll up to ~3s for TWS to push the account list.
+            accts = []
+            for _ in range(15):
+                accts = [a for a in (self.ib.managedAccounts() or []) if a]
+                if accts:
+                    break
+                self.ib.sleep(0.2)
+
+            if len(accts) > 1:
+                self.root.after(0, lambda n=len(accts):
+                    self._log_info(f"TWS reports {n} accounts — prompting for selection"))
+
+            self._tws_account = self._select_tws_account(accts)
             if not self._tws_account:
                 self.root.after(0, lambda: self._log_err(
+                    "No TWS account selected." if accts else
                     "Could not retrieve TWS account number."))
                 self.root.after(0, lambda: self._btn.config(
                     text="▶   START", bg=TEAL, fg="#0a1220"))
