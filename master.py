@@ -18,6 +18,10 @@ MAX_ORDERS = 500           # keep only the most recent N orders in memory
 # Set API_KEY env var to protect all endpoints with X-API-Key header auth.
 # Leave empty to disable (not recommended when master is on a public IP).
 API_KEY    = os.environ.get("API_KEY", "").strip()
+# Set MASTER_ACCOUNT to pin the server to one specific subaccount when the
+# TWS login exposes multiple. If unset, the FIRST account from
+# managedAccounts() is used.
+MASTER_ACCOUNT_OVERRIDE = os.environ.get("MASTER_ACCOUNT", "").strip()
 
 # ── shared state ──────────────────────────────────────────────────────────────
 orders           = []
@@ -26,6 +30,8 @@ master_balance   = 0.0
 positions_cache  = []      # refreshed every 30s by background loop — thread-safe snapshot
 symbol_order_info = {}     # symbol -> {orderType, price, auxPrice} from latest captured order
 _ib_instance     = None
+_master_account  = ""      # resolved AFTER connect via managedAccounts()
+_managed_accounts = []     # full list TWS reported (for /accounts)
 lock             = threading.Lock()
 
 # ── Flask app ─────────────────────────────────────────────────────────────────
@@ -84,9 +90,23 @@ def status():
     if not _auth_ok():
         return jsonify({"error": "unauthorized"}), 401
     return jsonify({
-        "status":         "running",
-        "total_orders":   len(orders),
-        "master_balance": master_balance,
+        "status":           "running",
+        "total_orders":     len(orders),
+        "master_balance":   master_balance,
+        "master_account":   _master_account,
+        "managed_accounts": _managed_accounts,
+    })
+
+@app.route("/accounts", methods=["GET"])
+def get_accounts():
+    """Expose the list of accounts TWS reported and which one the master
+    server is currently tracking. Useful for debugging multi-subaccount
+    logins and for UI clients that want to surface the master's account."""
+    if not _auth_ok():
+        return jsonify({"error": "unauthorized"}), 401
+    return jsonify({
+        "managed_accounts": _managed_accounts,
+        "master_account":   _master_account,
     })
 
 # ── position capture on startup ───────────────────────────────────────────────
@@ -110,8 +130,12 @@ def capture_positions(ib):
         return
 
     loaded = 0
+    acct = _master_account
     with lock:
         for pos in positions:
+            # Filter to the resolved master account on multi-subaccount logins
+            if acct and getattr(pos, "account", "") != acct:
+                continue
             c = pos.contract
             qty = float(pos.position)
             if qty == 0:
@@ -170,22 +194,35 @@ def capture(trade):
 
 # ── balance updater ───────────────────────────────────────────────────────────
 def update_balance(ib):
+    """Pull NetLiquidation/USD only for the resolved master account.
+    On multi-subaccount TWS logins, ib.accountValues() returns rows for
+    every account — without filtering we'd grab whichever NetLiquidation
+    landed first, which is rarely the right one."""
     global master_balance
     try:
+        acct = _master_account
         for v in ib.accountValues():
-            if v.tag == "NetLiquidation" and v.currency == "USD":
+            if (v.tag == "NetLiquidation"
+                    and v.currency == "USD"
+                    and (not acct or v.account == acct)):
                 master_balance = float(v.value)
-                print(f"💰  Master balance: ${master_balance:,.2f}")
+                print(f"💰  Master balance ({v.account or 'all'}): ${master_balance:,.2f}")
                 return
+        print(f"⚠️  No NetLiquidation/USD row found for account '{acct}' — balance left at ${master_balance:,.2f}")
     except Exception as e:
         print(f"⚠️  Balance fetch failed: {e}")
 
 def update_positions_cache(ib):
-    """Refresh positions_cache from IB — called from the IB event loop thread only."""
+    """Refresh positions_cache from IB — called from the IB event loop thread only.
+    On multi-subaccount logins ib.portfolio() merges every account's holdings,
+    so we filter by the resolved master account before snapshotting."""
     global positions_cache
     try:
+        acct = _master_account
         snapshot = []
         for p in ib.portfolio():
+            if acct and getattr(p, "account", "") != acct:
+                continue
             qty = float(p.position)
             if qty == 0:
                 continue
@@ -250,6 +287,29 @@ def connect_tws():
     print(f"🔌  Connecting to TWS {TWS_HOST}:{TWS_PORT} clientId={TWS_CLIENT} ...")
     ib.connect(TWS_HOST, TWS_PORT, clientId=TWS_CLIENT, timeout=10)
     print("✅  TWS connected")
+
+    # Resolve which account this master server is supposed to track BEFORE
+    # any account-aware reads (balance/positions). managedAccounts() can
+    # briefly return [] right after connect — poll for ~3s.
+    global _master_account, _managed_accounts
+    accts = []
+    for _ in range(15):
+        accts = [a for a in (ib.managedAccounts() or []) if a]
+        if accts:
+            break
+        ib.sleep(0.2)
+    _managed_accounts = accts
+    if MASTER_ACCOUNT_OVERRIDE and MASTER_ACCOUNT_OVERRIDE in accts:
+        _master_account = MASTER_ACCOUNT_OVERRIDE
+    elif accts:
+        _master_account = accts[0]
+    else:
+        _master_account = ""
+    if len(accts) > 1:
+        print(f"👥  TWS reports {len(accts)} accounts: {accts} — using '{_master_account}' "
+              f"(set MASTER_ACCOUNT env var to pin a different one)")
+    else:
+        print(f"👥  Master account: '{_master_account}'")
 
     update_balance(ib)
     capture_positions(ib)
