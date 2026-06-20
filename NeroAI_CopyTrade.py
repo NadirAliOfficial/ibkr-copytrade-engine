@@ -250,7 +250,7 @@ class PaxAmericanaClient:
     def _set_icon(self):
         try:
             icon_path = _resource_path(os.path.join("assets", "pax_americana.png"))
-            pil_icon = Image.open(icon_path)
+            pil_icon = Image.open(icon_path, encoding="utf-8")
             pil_icon = _remove_near_black_bg(pil_icon)
             pil_icon = _trim_transparent(pil_icon)
             pil_icon = _pad_to_square(pil_icon, pad_ratio=0.04)
@@ -316,7 +316,7 @@ class PaxAmericanaClient:
 
         try:
             if LOGO_B64:
-                pil_img = Image.open(io.BytesIO(base64.b64decode(LOGO_B64))).convert("RGBA")
+                pil_img = Image.open(io.BytesIO(base64.b64decode(LOGO_B64, encoding="utf-8"))).convert("RGBA")
                 try:
                     bg_pixel = pil_img.getpixel((0, 0))[:3]
                     tol = 28
