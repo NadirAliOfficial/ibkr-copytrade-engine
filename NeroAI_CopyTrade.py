@@ -102,7 +102,7 @@ try {{ Remove-Item -Force -Path $MyInvocation.MyCommand.Path }} catch {{ }}
              "-WindowStyle", "Hidden", "-File", ps1_path],
             creationflags=subprocess.CREATE_NO_WINDOW,
         )
-        sys.exit(0)
+        sys.sys.exit(0)
 
     except Exception:
         pass  # never block startup due to update failure
