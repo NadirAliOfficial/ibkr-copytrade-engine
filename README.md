@@ -223,9 +223,13 @@ tzdata
 
 ---
 
+## Need something like this built?
+
+This project was built by [Team NAK](https://teamnak.com). We build custom [IBKR trading bots](https://teamnak.com/ibkr-trading-bot-development) and [IBKR API integrations](https://teamnak.com/ibkr-api-development) in Python, delivered with full source code.
+
 ## Credits
 
-Built by **Nadir Ali Khan** — [theteamnak.com](https://theteamnak.com)
+Built by **Nadir Ali Khan** — [teamnak.com](https://teamnak.com)
 
 © Pax Americana | [github.com/NadirAliOfficial](https://github.com/NadirAliOfficial)
 <!-- updated: 2024-07-26 -->
